@@ -16,6 +16,7 @@ import ImageGalleryModal from './components/ImageGalleryModal.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import V5UsageModal from './components/V5UsageModal.vue';
 import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
+import ProfileDropdown from './components/ProfileDropdown.vue';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
 import { Sun, Moon, LogOut, Download, Copy, Loader2, Image as ImageIcon, X, KeyRound, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink } from 'lucide-vue-next';
 
@@ -43,27 +44,8 @@ const checkIframe = () => {
   isInIframe.value = checkIsIframe();
 };
 
-const showProfileDropdown = ref(false);
-const profileDropdownRef = ref<HTMLElement | null>(null);
-
-const handleSelectProfile = (p: string) => {
-  showProfileDropdown.value = false;
-  profileStore.switchProfile(p);
-};
-
-const openManageProfiles = () => {
-  showProfileDropdown.value = false;
-  showSettingsModal.value = true;
-};
-
 const openInNewTab = () => {
   window.open(window.location.href, '_blank');
-};
-
-const handleDocumentClick = (e: MouseEvent) => {
-  if (profileDropdownRef.value && !profileDropdownRef.value.contains(e.target as Node)) {
-    showProfileDropdown.value = false;
-  }
 };
 
 const openUpscaleModal = (img?: any) => {
@@ -1059,14 +1041,12 @@ onMounted(async () => {
   }
 
   checkIframe();
-  document.addEventListener('click', handleDocumentClick);
 });
 
 onUnmounted(() => {
   window.removeEventListener('dragover', onWindowDragOver);
   window.removeEventListener('dragleave', onWindowDragLeave);
   window.removeEventListener('drop', onWindowDrop);
-  document.removeEventListener('click', handleDocumentClick);
   sidebarObserver?.disconnect();
 });
 
@@ -1225,55 +1205,8 @@ watch(
             </h1>
           </div>
 
-          <!-- 存档快速切换下拉 -->
-          <div class="relative text-left shrink-0 z-50" ref="profileDropdownRef">
-            <button 
-              type="button"
-              @click="showProfileDropdown = !showProfileDropdown"
-              class="flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700/80 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 transition cursor-pointer select-none text-xs sm:text-sm font-medium text-gray-800 dark:text-gray-200"
-              title="切换当前 NAS 本地存档"
-            >
-              <FolderHeart class="w-4 h-4 text-blue-500 shrink-0" />
-              <span class="max-w-[120px] truncate">{{ profileStore.currentProfile }}</span>
-              <ChevronDown class="w-3.5 h-3.5 text-gray-400 transition-transform duration-150" :class="{ 'rotate-180': showProfileDropdown }" />
-            </button>
-
-            <Transition
-              enter-active-class="transition ease-out duration-100"
-              enter-from-class="transform opacity-0 scale-95"
-              enter-to-class="transform opacity-100 scale-100"
-              leave-active-class="transition ease-in duration-75"
-              leave-from-class="transform opacity-100 scale-100"
-              leave-to-class="transform opacity-0 scale-95"
-            >
-              <div 
-                v-if="showProfileDropdown"
-                class="absolute left-0 z-[100] mt-1.5 w-48 origin-top-left rounded-xl bg-white dark:bg-gray-800 shadow-2xl ring-1 ring-black/10 dark:ring-white/10 p-1 divide-y divide-gray-100 dark:divide-gray-700/60"
-              >
-                <div class="py-1 max-h-56 overflow-y-auto custom-scrollbar">
-                  <button
-                    v-for="p in profileStore.profiles"
-                    :key="p"
-                    @click="handleSelectProfile(p)"
-                    class="w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg transition-colors"
-                    :class="p === profileStore.currentProfile ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-semibold' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50'"
-                  >
-                    <span class="truncate">{{ p }}</span>
-                    <Check v-if="p === profileStore.currentProfile" class="w-3.5 h-3.5 text-blue-500 shrink-0 ml-1" />
-                  </button>
-                </div>
-                <div class="pt-1">
-                  <button
-                    @click="openManageProfiles"
-                    class="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-                  >
-                    <Settings class="w-3.5 h-3.5" />
-                    <span>管理 / 新建存档...</span>
-                  </button>
-                </div>
-              </div>
-            </Transition>
-          </div>
+          <!-- 存档快速切换下拉 (通过 Teleport 挂载到 body，彻底杜绝被任何下层工作台容器遮挡) -->
+          <ProfileDropdown @manage="showSettingsModal = true" />
 
           <!-- 超分扩图入口 -->
           <button 
