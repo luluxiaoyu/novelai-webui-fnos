@@ -66,7 +66,6 @@ case "$1" in
         export TRIM_PKGVAR="$TRIM_PKGVAR"
         export NOVELAI_SHARE_DIR="$SHARE_DIR"
         export GATEWAY_PREFIX="/app/novelai"
-        export PORT="${PORT:-3000}"
 
         SERVER_JS="${TRIM_APPDEST}/server/app.js"
         if [ ! -f "$SERVER_JS" ] && [ -f "${TRIM_APPDEST}/app/server/app.js" ]; then

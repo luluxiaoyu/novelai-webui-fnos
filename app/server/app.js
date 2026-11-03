@@ -92,8 +92,8 @@ process.on('unhandledRejection', (reason, promise) => {
   writeServerLog('FATAL', 'Unhandled Rejection: ' + (reason?.message || String(reason)), reason?.stack || reason);
 });
 
-// 1. Listen on HTTP port (gracefully handles EADDRINUSE so socket gateway remains active)
-const PORT = process.env.PORT || 3000;
+// 1. Optional HTTP port (only enabled if PORT environment variable is explicitly set)
+const PORT = process.env.PORT;
 let httpServer = null;
 if (PORT && PORT !== '0') {
   httpServer = http.createServer(app);
