@@ -3,10 +3,11 @@ import { ref, watch, onMounted } from 'vue';
 import { useAuthStore } from '../stores/auth';
 import { useProfileStore } from '../stores/profile';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
+import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '../utils/mobilePerf';
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
-  Trash2, Edit3, Plus, Eye, EyeOff
+  Trash2, Edit3, Plus, Eye, EyeOff, Smartphone
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -31,6 +32,11 @@ const enableEncryption = ref(false);
 const encryptionKey = ref('nahida1027');
 const maxConcurrency = ref(1);
 const enableLogging = ref(true);
+const reduceMobileEffects = ref(getReduceMobileEffectsSetting());
+
+watch(reduceMobileEffects, (val) => {
+  setReduceMobileEffectsSetting(val);
+});
 
 const isTestingToken = ref(false);
 const tokenTestResult = ref<{ success: boolean; message: string } | null>(null);
@@ -382,6 +388,23 @@ const handleDeleteProfile = async (name: string) => {
                 <div class="text-[11px] text-gray-400">支持浅色与深色模式，默认跟随操作系统。可在主界面右上角随时手动切换。</div>
               </div>
             </div>
+          </div>
+
+          <!-- 手机端飞牛 App 弱化效果开关 -->
+          <div class="flex items-start justify-between p-4 bg-gray-50/80 dark:bg-gray-800/40 rounded-xl border border-gray-200 dark:border-gray-800">
+            <div class="space-y-1 pr-4">
+              <div class="font-medium text-gray-800 dark:text-gray-200 flex items-center gap-2">
+                <Smartphone class="w-4 h-4 text-purple-500" />
+                <span>手机端飞牛 App 内弱化显示效果</span>
+              </div>
+              <p class="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                仅在检测到运行于手机飞牛 App 或内嵌 WebView 时生效。自动关闭高斯模糊并优化为轻量硬件淡入动画，消除安卓端渲染卡顿。PC 浏览器及正常手机独立浏览器不受影响。
+              </p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+              <input type="checkbox" v-model="reduceMobileEffects" class="sr-only peer">
+              <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+            </label>
           </div>
         </div>
 
