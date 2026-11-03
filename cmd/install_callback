@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+### Lifecycle script: install_callback
+mkdir -p "${TRIM_PKGVAR}/logs" "${TRIM_PKGVAR}/run" "${TRIM_PKGVAR}/data" "${TRIM_APPDEST}/bin"
+
+if [ -n "$TRIM_USERNAME" ]; then
+    chown -R "$TRIM_USERNAME":"$TRIM_GROUPNAME" "${TRIM_PKGVAR}" 2>/dev/null || true
+    chown -R "$TRIM_USERNAME":"$TRIM_GROUPNAME" "${TRIM_APPDEST}/bin" 2>/dev/null || true
+fi
+
+exit 0

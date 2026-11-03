@@ -1,0 +1,50 @@
+name: Dev Build FPK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+jobs:
+  build-dev:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Vue Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Install Server Production Dependencies
+        run: |
+          cd app/server
+          npm install --omit=dev
+
+      - name: Build fnOS .fpk Package (Dev Mode)
+        env:
+          DEV_BUILD: 'true'
+        run: |
+          node scripts/build_fpk.js
+
+      - name: Upload Dev FPK Packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: novelai-dev-packages
+          path: dist_fpk/*.fpk
+          retention-days: 14

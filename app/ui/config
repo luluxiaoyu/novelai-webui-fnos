@@ -1,0 +1,28 @@
+{
+  ".url": {
+    "novelai.Application": {
+      "title": "NovelAI WebUI APP",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/novelai",
+      "gatewaySocket": "app.sock",
+      "url": "/app/novelai/",
+      "allUsers": true,
+      "width": 1360,
+      "height": 880,
+      "minWidth": 960,
+      "minHeight": 640
+    },
+    "novelai.Fullscreen": {
+      "title": "NovelAI WebUI",
+      "icon": "images/icon_{0}.png",
+      "type": "url",
+      "protocol": "",
+      "gatewayPrefix": "/app/novelai",
+      "gatewaySocket": "app.sock",
+      "url": "/app/novelai/",
+      "allUsers": true
+    }
+  }
+}

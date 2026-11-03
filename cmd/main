@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# Prefer system node or fnOS nodejs runtime
+if ! command -v node >/dev/null 2>&1; then
+    BASE_DIR="/var/apps"
+    for node_dir in "${BASE_DIR}/nodejs"*/target/bin "/opt/node/bin"; do
+        if [ -x "${node_dir}/node" ]; then
+            export PATH="${node_dir}:$PATH"
+            break
+        fi
+    done
+fi
+export PATH="/usr/local/bin:/usr/bin:$PATH"
+
+TRIM_PKGVAR="${TRIM_PKGVAR:-./var}"
+TRIM_APPDEST="${TRIM_APPDEST:-.}"
+
+# Detect fnOS data-share mount directory (for fnOS 文件管理)
+SHARE_DIR=""
+if [ -n "$TRIM_DATA_SHARE_PATHS" ] && [ -d "$TRIM_DATA_SHARE_PATHS" ]; then
+    SHARE_DIR="$TRIM_DATA_SHARE_PATHS"
+elif [ -d "${TRIM_APPDEST}/shares/NovelAI-WebUI" ]; then
+    SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI-WebUI"
+elif [ -d "/var/apps/novelai/shares/NovelAI-WebUI" ]; then
+    SHARE_DIR="/var/apps/novelai/shares/NovelAI-WebUI"
+elif [ -d "${TRIM_APPDEST}/shares/NovelAI" ]; then
+    SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI"
+elif [ -d "/var/apps/novelai/shares/NovelAI" ]; then
+    SHARE_DIR="/var/apps/novelai/shares/NovelAI"
+fi
+
+if [ -z "$SHARE_DIR" ]; then
+    SHARE_DIR="${TRIM_PKGVAR}/data"
+fi
+
+mkdir -p "${SHARE_DIR}/profiles" "${SHARE_DIR}/logs" "${TRIM_PKGVAR}/logs"
+chmod -R 777 "$SHARE_DIR" 2>/dev/null || true
+
+# Migrate existing profiles data if available
+if [ "$SHARE_DIR" != "${TRIM_PKGVAR}/data" ] && [ -d "${TRIM_PKGVAR}/data/profiles" ]; then
+    cp -rn "${TRIM_PKGVAR}/data/profiles"/* "$SHARE_DIR/profiles/" 2>/dev/null || true
+fi
+if [ -d "${TRIM_APPDEST}/shares/NovelAI/profiles" ] && [ "$SHARE_DIR" != "${TRIM_APPDEST}/shares/NovelAI" ]; then
+    cp -rn "${TRIM_APPDEST}/shares/NovelAI/profiles"/* "$SHARE_DIR/profiles/" 2>/dev/null || true
+fi
+
+PID_FILE="${TRIM_PKGVAR}/server.pid"
+LOG_FILE="${SHARE_DIR}/logs/server.log"
+SOCKET_FILE="${TRIM_APPDEST}/app.sock"
+
+case "$1" in
+    start)
+        echo "Starting NovelAI backend service..."
+        
+        # Check if already running
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "NovelAI backend already running (PID: $(cat "$PID_FILE"))"
+            exit 0
+        fi
+
+        # Remove stale socket
+        rm -f "$SOCKET_FILE"
+
+        export SOCKET_PATH="$SOCKET_FILE"
+        export TRIM_APPDEST="$TRIM_APPDEST"
+        export TRIM_PKGVAR="$TRIM_PKGVAR"
+        export NOVELAI_SHARE_DIR="$SHARE_DIR"
+        export GATEWAY_PREFIX="/app/novelai"
+        export PORT="${PORT:-3000}"
+
+        SERVER_JS="${TRIM_APPDEST}/server/app.js"
+        if [ ! -f "$SERVER_JS" ] && [ -f "${TRIM_APPDEST}/app/server/app.js" ]; then
+            SERVER_JS="${TRIM_APPDEST}/app/server/app.js"
+        fi
+
+        # 运行日志轮转：启动时归档上一份日志，保留最新 5 份历史归档 + 1 份当前运行中的 server.log
+        if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+            ARCHIVE_NAME="server_$(date "+%Y-%m-%d_%H%M%S").log"
+            mv "$LOG_FILE" "${SHARE_DIR}/logs/${ARCHIVE_NAME}" 2>/dev/null || true
+        fi
+        # 清理超出 5 份的历史运行日志
+        ls -t "${SHARE_DIR}/logs"/server_*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+
+        nohup node "$SERVER_JS" >> "$LOG_FILE" 2>&1 &
+        echo $! > "$PID_FILE"
+
+        # Wait up to 5 seconds for socket or startup
+        for i in {1..10}; do
+            if [ -S "$SOCKET_FILE" ] || kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
+                echo "NovelAI service started successfully (PID: $(cat "$PID_FILE"))"
+                break
+            fi
+            sleep 0.5
+        done
+
+        exit 0
+        ;;
+    stop)
+        echo "Stopping NovelAI backend service..."
+        if [ -f "$PID_FILE" ]; then
+            kill -TERM "$(cat "$PID_FILE")" 2>/dev/null || true
+            rm -f "$PID_FILE"
+        fi
+        
+        # Remove socket
+        rm -f "$SOCKET_FILE"
+
+        pkill -TERM -f "${TRIM_APPDEST}/.*server/app\.js" 2>/dev/null || true
+        sleep 0.5
+        pkill -9 -f "${TRIM_APPDEST}/.*server/app\.js" 2>/dev/null || true
+
+        exit 0
+        ;;
+    status)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            exit 0
+        fi
+        exit 3
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}"
+        exit 1
+        ;;
+esac

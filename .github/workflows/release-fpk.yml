@@ -1,0 +1,93 @@
+name: Release fnOS FPK App
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g. 1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Vue Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Install Server Production Dependencies
+        run: |
+          cd app/server
+          npm install --omit=dev
+
+      - name: Extract Version
+        id: get_version
+        run: |
+          RAW_TAG="${{ github.event.release.tag_name || github.event.inputs.version || github.ref_name }}"
+          # Strip leading 'v'
+          VERSION="${RAW_TAG#v}"
+          if [ -z "$VERSION" ]; then
+            VERSION="1.1.0"
+          fi
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            VERSION="${VERSION}.0"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building with target version: $VERSION"
+
+      - name: Extract Release Notes from CHANGELOGS.md
+        run: |
+          node -e "
+            const fs = require('fs');
+            const targetVer = '${{ steps.get_version.outputs.VERSION }}';
+            let notes = '';
+            if (fs.existsSync('CHANGELOGS.md')) {
+              const content = fs.readFileSync('CHANGELOGS.md', 'utf8');
+              const verPattern = targetVer ? (targetVer.includes('.') && targetVer.split('.').length === 2 ? targetVer.replace(/\\./g, '\\\\.') + '(\\\\.0)?' : targetVer.replace(/\\./g, '\\\\.')) : '[0-9.]+';
+              const regex = new RegExp('##\\\\s*\\\\[?v?' + verPattern + '\\\\]?[^\\\\n]*\\\\n([\\\\s\\\\S]*?)(?=\\\\n##|\\\\s*$)', 'i');
+              let match = content.match(regex);
+              if (!match) {
+                match = content.match(/##\s*\[?[^\]\n]+\]?[^\n]*\n([\s\S]*?)(?=\n##|\s*$)/);
+              }
+              if (match && match[1]) {
+                notes = match[1].trim();
+              }
+            }
+            if (!notes) {
+              notes = 'NovelAI v' + targetVer + ' 更新发布。';
+            }
+            fs.writeFileSync('RELEASE_NOTES.md', notes, 'utf8');
+          "
+
+      - name: Build fnOS .fpk Packages
+        env:
+          APP_VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          node scripts/build_fpk.js
+
+      - name: Upload Assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: dist_fpk/*.fpk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

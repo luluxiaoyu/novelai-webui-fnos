@@ -1,0 +1,12 @@
+appname=novelai
+version=1.0.0
+display_name=NovelAI WebUI
+desc=NovelAI 图像生成代理服务与 Web 客户端 (支持文生图、图生图、涂抹局部重绘、V5 模型、采样微调与 NAS 本地多存档存储)
+source=thirdparty
+platform=all
+maintainer=xiaoyu
+service_port=3000
+checkport=false
+desktop_uidir=ui
+desktop_applaunchname=novelai.Application
+ctl_stop=true

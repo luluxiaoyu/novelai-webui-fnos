@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+echo "Installing NovelAI package..."
+
+# Create runtime directories
+mkdir -p "${TRIM_PKGVAR}/logs" "${TRIM_PKGVAR}/data"
+
+# Set permissions if username is provided
+if [ -n "$TRIM_USERNAME" ]; then
+    chown -R "$TRIM_USERNAME":"$TRIM_GROUPNAME" "${TRIM_PKGVAR}" 2>/dev/null || true
+fi
+
+exit 0

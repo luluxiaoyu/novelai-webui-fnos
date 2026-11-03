@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist_fpk/
+app/ui/dist/
+frontend/dist/
+frontend/node_modules/
+app/server/node_modules/
+data/
+var/
+logs/
+app.sock
+*.log
+*.pid
+app.tgz
+.DS_Store
+.idea/
+.vscode/
