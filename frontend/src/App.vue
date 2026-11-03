@@ -17,8 +17,9 @@ import SettingsModal from './components/SettingsModal.vue';
 import V5UsageModal from './components/V5UsageModal.vue';
 import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
 import ProfileDropdown from './components/ProfileDropdown.vue';
+import WelcomeSetupModal from './components/WelcomeSetupModal.vue';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
-import { Sun, Moon, LogOut, Download, Copy, Loader2, Image as ImageIcon, X, KeyRound, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink } from 'lucide-vue-next';
+import { Sun, Moon, Download, Copy, Loader2, Image as ImageIcon, X, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink } from 'lucide-vue-next';
 
 const authStore = useAuthStore();
 const genStore = useGenerationStore();
@@ -30,7 +31,17 @@ const showPromptEditor = ref(false);
 const showImageGallery = ref(false);
 const showV5UsageModal = ref(false);
 const showUpscaleModal = ref(false);
+const showWelcomeModal = ref(false);
 const upscaleTargetImage = ref<any>(null);
+
+const handleWelcomeCompleted = async () => {
+  try {
+    await profileStore.fetchProfiles();
+    await genStore.loadProfileData(profileStore.currentProfile);
+  } catch (err: any) {
+    console.warn('[WelcomeCompleted] Refresh error:', err.message);
+  }
+};
 
 const checkIsIframe = () => {
   try {
@@ -64,7 +75,6 @@ const handleGalleryInpaint = (item: any) => {
 const isDark = useDark();
 const toggleDark = useToggle(isDark);
 
-const inputToken = ref('');
 const inputAccessKey = ref('');
 const showPromptHistory = ref(false);
 const mobileTab = ref<'canvas' | 'controls' | 'history'>('canvas');
@@ -643,7 +653,7 @@ const onWindowDrop = async (e: DragEvent) => {
   isDraggingOver.value = false;
 
   // 如果超分弹窗或其他弹窗正在展示，禁止触发全局拖拽识别元数据弹窗
-  if (showUpscaleModal.value || showImageGallery.value || showSettingsModal.value || showCharacterLibrary.value || showStyleLibrary.value || showPromptEditor.value || showV5UsageModal.value) {
+  if (showUpscaleModal.value || showImageGallery.value || showSettingsModal.value || showCharacterLibrary.value || showStyleLibrary.value || showPromptEditor.value || showV5UsageModal.value || showWelcomeModal.value) {
     return;
   }
 
@@ -1027,6 +1037,8 @@ onMounted(async () => {
 
   if (authStore.siteUnlocked && authStore.token) {
     authStore.fetchUserData();
+  } else if (!authStore.token || !authStore.token.trim()) {
+    showWelcomeModal.value = true;
   }
 
   // 侧边栏无限滚动懒加载观察者
@@ -1058,16 +1070,6 @@ const handleVerifyAccess = async () => {
       if (authStore.token) {
         authStore.fetchUserData();
       }
-    }
-  }
-};
-
-const handleLogin = async () => {
-  if (inputToken.value.trim()) {
-    authStore.error = '';
-    const success = await authStore.login(inputToken.value.trim());
-    if (success) {
-      inputToken.value = '';
     }
   }
 };
@@ -1245,7 +1247,7 @@ watch(
               内置 API Key
             </span>
             <span class="text-xs bg-gray-100 dark:bg-gray-800 px-2.5 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 font-medium inline-flex items-center gap-1.5 whitespace-nowrap">
-              <span>{{ authStore.subscriptionTier === 3 ? 'Opus 会员' : (authStore.subscriptionTier === 2 ? 'Scroll 会员' : (authStore.subscriptionTier === 1 ? 'Tablet 会员' : '免费/未定')) }}</span>
+              <span>{{ authStore.subscriptionTier === 3 ? 'Opus 会员' : (authStore.subscriptionTier === 2 ? 'Scroll 会员' : (authStore.subscriptionTier === 1 ? 'Tablet 会员' : '无订阅')) }}</span>
               <span v-if="authStore.expiresAt" class="text-gray-500 dark:text-gray-400 font-normal text-[10px] bg-gray-200/50 dark:bg-gray-700/50 px-1.5 py-0 rounded">
                 (至 {{ new Date(authStore.expiresAt * 1000).toLocaleDateString() }})
               </span>
@@ -1298,106 +1300,25 @@ watch(
             <ExternalLink class="w-4 h-4" />
           </button>
           <a 
-            href="https://github.com/luluxiaoyu/novelai-webui" 
+            href="https://github.com/luluxiaoyu/novelai-webui-fnos" 
             target="_blank" 
             rel="noopener noreferrer"
             class="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white p-1.5 transition flex items-center justify-center shrink-0 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800" 
-            title="GitHub 开源仓库 (novelai-webui)"
+            title="GitHub 开源仓库 (novelai-webui-fnos)"
           >
             <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24" aria-hidden="true">
               <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z"></path>
             </svg>
           </a>
 
-          <template v-if="authStore.token">
-            <button @click="authStore.logout(); inputToken = ''" class="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition shrink-0" title="退出当前 Token 登录">
-              <LogOut class="w-4 h-4" />
-            </button>
-            <button v-if="authStore.siteAuthRequired" @click="authStore.lockSite(); inputToken = ''" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition shrink-0" title="退出并锁定访问密钥">
-              <Lock class="w-4 h-4" />
-            </button>
-          </template>
+          <button v-if="authStore.siteAuthRequired" @click="authStore.lockSite()" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition shrink-0" title="退出并锁定访问密钥">
+            <Lock class="w-4 h-4" />
+          </button>
         </div>
       </header>
 
-    <!-- 登录页 -->
-    <main class="flex-1 flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-950 transition-colors" v-if="!authStore.token">
-      <div class="max-w-md w-full bg-white dark:bg-gray-900 p-8 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl transition-colors">
-        <div class="flex justify-center mb-6">
-          <div class="p-4 bg-blue-50 dark:bg-blue-900/30 rounded-full">
-            <KeyRound class="w-10 h-10 text-blue-600 dark:text-blue-400" />
-          </div>
-        </div>
-        <h2 class="text-2xl mb-2 text-center font-bold">连接到 NovelAI</h2>
-        <p class="text-center text-gray-500 dark:text-gray-400 text-sm mb-8">
-          请输入您的 Persistent API Token 开始创作
-        </p>
-        
-        <div class="space-y-4">
-          <!-- 内置 API Key 快速登录 -->
-          <div v-if="authStore.hasBuiltinKey" class="mb-2">
-            <button 
-              @click="authStore.loginWithBuiltin()" 
-              :disabled="authStore.loading"
-              class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white rounded-xl p-4 transition-all font-semibold flex justify-center items-center gap-2 shadow-lg shadow-purple-600/20 active:scale-[0.99] text-sm"
-            >
-              <Loader2 v-if="authStore.loading && authStore.token === '__BUILTIN__'" class="w-4 h-4 animate-spin" />
-              <Sparkles v-else class="w-4 h-4 text-amber-300" />
-              <span>一键使用系统内置 API Key 登录</span>
-            </button>
-            <div class="flex items-center gap-2 my-4">
-              <div class="flex-1 h-px bg-gray-200 dark:bg-gray-800"></div>
-              <span class="text-xs text-gray-400 font-medium">或使用个人 Token</span>
-              <div class="flex-1 h-px bg-gray-200 dark:bg-gray-800"></div>
-            </div>
-          </div>
-
-          <div>
-            <input 
-              v-model="inputToken" 
-              placeholder="NovelAI API Token (pst-...)" 
-              type="password"
-              @keyup.enter="handleLogin"
-              class="w-full bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-mono text-sm"
-            />
-          </div>
-          
-          <button 
-            @click="handleLogin" 
-            :disabled="authStore.loading || !inputToken"
-            class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-blue-900 disabled:cursor-not-allowed text-white rounded-xl p-4 transition-colors font-semibold flex justify-center items-center gap-2 shadow-lg shadow-blue-600/20"
-          >
-            <Loader2 v-if="authStore.loading && authStore.token !== '__BUILTIN__'" class="w-5 h-5 animate-spin" />
-            {{ authStore.loading ? '正在验证密钥...' : (authStore.hasBuiltinKey ? '使用个人 Token 连接' : '立即连接') }}
-          </button>
-        </div>
-
-        <div v-if="authStore.error" class="mt-6 p-4 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 flex items-start gap-3">
-          <div class="mt-0.5">
-            <X class="w-4 h-4 text-red-600 dark:text-red-400" />
-          </div>
-          <div class="text-sm text-red-600 dark:text-red-400 leading-tight">
-            <span class="font-semibold block mb-1">验证失败</span>
-            {{ authStore.error === 'Unauthorized' ? 'API Key 无效或已过期，请检查后重试。' : authStore.error }}
-          </div>
-        </div>
-
-        <!-- 退出访问权限 (重新锁定/切换访问密钥) -->
-        <div v-if="authStore.siteAuthRequired" class="mt-6 pt-4 border-t border-gray-100 dark:border-gray-800 flex justify-center">
-          <button 
-            @click="authStore.lockSite(); inputToken = ''" 
-            class="text-xs text-gray-500 hover:text-red-600 dark:hover:text-red-400 transition-colors flex items-center gap-1.5 font-medium py-1 px-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800/50"
-            title="清除当前访问密钥并返回权限验证锁屏"
-          >
-            <Lock class="w-3.5 h-3.5" />
-            <span>退出并切换访问密钥</span>
-          </button>
-        </div>
-      </div>
-    </main>
-
     <!-- 工作台页 (桌面端三栏并排各卡片内部滚动，手机端支持底部选项卡折叠切换) -->
-    <main class="p-3 md:p-4 flex flex-col lg:flex-row gap-4 flex-1 min-h-0 overflow-hidden relative" v-else>
+    <main class="p-3 md:p-4 flex flex-col lg:flex-row gap-4 flex-1 min-h-0 overflow-hidden relative">
       
       <!-- 移动端半透明背景遮罩 -->
       <div 
@@ -2997,6 +2918,12 @@ watch(
 
     <!-- AI 超分放大弹窗 (双模式：现有图/本地上传) -->
     <ImageUpscaleModal v-model="showUpscaleModal" :target-image="upscaleTargetImage" />
+
+    <!-- 首次运行欢迎与向导配置弹窗 -->
+    <WelcomeSetupModal 
+      v-model="showWelcomeModal" 
+      @completed="handleWelcomeCompleted" 
+    />
 
     <!-- 页面拖拽悬浮提示遮罩 -->
     <div 

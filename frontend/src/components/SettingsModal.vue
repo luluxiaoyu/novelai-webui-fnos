@@ -236,7 +236,7 @@ const handleDeleteProfile = async (name: string) => {
             <Globe class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-gray-900 dark:text-white text-base">系统设置</h3>
+            <h3 class="font-bold text-gray-900 dark:text-white text-base">NovelAI WebUI 设置</h3>
             <p class="text-xs text-gray-500 dark:text-gray-400">服务连接与存储配置</p>
           </div>
         </div>
