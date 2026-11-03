@@ -92,11 +92,22 @@ process.on('unhandledRejection', (reason, promise) => {
   writeServerLog('FATAL', 'Unhandled Rejection: ' + (reason?.message || String(reason)), reason?.stack || reason);
 });
 
-// 1. Listen on HTTP port
+// 1. Listen on HTTP port (gracefully handles EADDRINUSE so socket gateway remains active)
 const PORT = process.env.PORT || 3000;
-const httpServer = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Server] NovelAI WebUI listening on HTTP port: ${PORT}`);
-});
+let httpServer = null;
+if (PORT && PORT !== '0') {
+  httpServer = http.createServer(app);
+  httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[Server] Warning: Port ${PORT} is in use by another service. Skipping HTTP port binding; Unix socket gateway remains fully operational.`);
+    } else {
+      console.error('[Server] HTTP server error:', err.message);
+    }
+  });
+  httpServer.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`[Server] NovelAI WebUI listening on HTTP port: ${PORT}`);
+  });
+}
 
 // 2. Listen on Unix domain socket for fnOS desktop iframe gateway
 const SOCKET_PATH = process.env.SOCKET_PATH;
