@@ -7,7 +7,7 @@ import {
   X, Search, Calendar, Download, Trash2, SlidersHorizontal, 
   Paintbrush, Copy, Check, Archive, CheckSquare, Square, 
   ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Grid, 
-  Layers, Clock, ArrowUpDown, Sparkles, Maximize2
+  Layers, Clock, ArrowUpDown, Sparkles, Maximize2, Loader2
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -729,8 +729,15 @@ const formatDateFull = (timestamp: number) => {
 
       <!-- 主图库展示流 -->
       <div class="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6 bg-gray-100/60 dark:bg-gray-950/60">
+        <!-- 读取中状态 -->
+        <div v-if="genStore.isLoadingHistory" class="h-full flex flex-col items-center justify-center py-24 text-center text-gray-400">
+          <Loader2 class="w-10 h-10 animate-spin text-blue-500 mb-3" />
+          <p class="text-sm font-semibold mb-1 text-gray-700 dark:text-gray-300">正在从 NAS 读取历史图库...</p>
+          <p class="text-xs text-gray-400">请稍候</p>
+        </div>
+
         <!-- 空状态 -->
-        <div v-if="filteredImages.length === 0" class="h-full flex flex-col items-center justify-center py-20 text-center text-gray-400">
+        <div v-else-if="filteredImages.length === 0" class="h-full flex flex-col items-center justify-center py-20 text-center text-gray-400">
           <div class="w-16 h-16 rounded-full bg-gray-200/60 dark:bg-gray-800/60 flex items-center justify-center mb-3">
             <Layers class="w-8 h-8 opacity-40" />
           </div>

@@ -2166,10 +2166,23 @@ watch(
                 </span>
               </template>
             </template>
+            <template v-else-if="genStore.isLoadingHistory">
+              <Loader2 class="w-10 h-10 animate-spin text-blue-500" />
+              <p class="text-sm font-medium text-gray-700 dark:text-gray-300">正在从 NAS 读取历史数据与画作...</p>
+            </template>
             <template v-else>
               <ImageIcon class="w-16 h-16 opacity-40" />
               <p class="text-sm font-medium">在左侧输入提示词并生成，图像将在此呈现</p>
             </template>
+          </div>
+
+          <!-- 切换存档或刷新历史时的浮动加载提示 -->
+          <div 
+            v-if="genStore.isLoadingHistory && (genStore.currentImage || genStore.streamPreviewUrl)"
+            class="absolute top-14 left-4 z-30 flex items-center gap-2 bg-white/95 dark:bg-gray-900/95 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-300 px-3 py-1.5 rounded-full shadow-lg backdrop-blur-md text-xs font-medium animate-fade-in pointer-events-none select-none"
+          >
+            <Loader2 class="w-3.5 h-3.5 animate-spin" />
+            <span>正在读取 NAS 历史数据...</span>
           </div>
 
           <!-- 画布浮动状态标签 (排队中 / 作画中 / 流式渲染中，纯轻量悬浮胶囊，位于缩放条下方，绝不遮挡画布与控制条) -->
@@ -2212,7 +2225,10 @@ watch(
       >
         <div class="flex justify-between items-center shrink-0 pb-1 border-b border-gray-100 dark:border-gray-800">
           <div class="flex items-center gap-1.5">
-            <h3 class="text-xs font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wider">历史 ({{ filteredHistory.length }})</h3>
+            <h3 class="text-xs font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+              <span>历史 ({{ filteredHistory.length }})</span>
+              <Loader2 v-if="genStore.isLoadingHistory" class="w-3 h-3 animate-spin text-blue-500" />
+            </h3>
             <CustomSelect v-model="historyFilter" :options="historyFilterOptions" variant="ghost" placement="left" />
             <button 
               @click="showImageGallery = true" 

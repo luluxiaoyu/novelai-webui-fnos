@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { useProfileStore } from '../stores/profile';
-import { FolderHeart, ChevronDown, Check, Settings } from 'lucide-vue-next';
+import { useGenerationStore } from '../stores/generation';
+import { FolderHeart, ChevronDown, Check, Settings, Loader2 } from 'lucide-vue-next';
 
 const emit = defineEmits<{
   (e: 'manage'): void;
 }>();
 
 const profileStore = useProfileStore();
+const genStore = useGenerationStore();
 const isOpen = ref(false);
 const triggerRef = ref<HTMLElement | null>(null);
 const dropdownMenuRef = ref<HTMLElement | null>(null);
@@ -84,9 +86,10 @@ onUnmounted(() => {
       type="button"
       @click="toggleDropdown"
       class="flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700/80 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 transition cursor-pointer select-none text-xs sm:text-sm font-medium text-gray-800 dark:text-gray-200"
-      title="切换当前 NAS 本地存档"
+      :title="profileStore.isLoading || genStore.isLoadingHistory ? '正在读取或切换 NAS 存档数据...' : '切换当前 NAS 本地存档'"
     >
-      <FolderHeart class="w-4 h-4 text-blue-500 shrink-0" />
+      <Loader2 v-if="profileStore.isLoading || genStore.isLoadingHistory" class="w-4 h-4 text-blue-500 shrink-0 animate-spin" />
+      <FolderHeart v-else class="w-4 h-4 text-blue-500 shrink-0" />
       <span class="max-w-[120px] truncate">{{ profileStore.currentProfile }}</span>
       <ChevronDown class="w-3.5 h-3.5 text-gray-400 transition-transform duration-150" :class="{ 'rotate-180': isOpen }" />
     </button>

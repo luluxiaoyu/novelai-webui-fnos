@@ -278,9 +278,9 @@ export const useGenerationStore = defineStore('generation', () => {
 
         // 自动恢复上一次的绘图参数与设置
         if (d.params && typeof d.params === 'object' && Object.keys(d.params).length > 0) {
-          useParams(d.params);
+          useParams(d.params, true);
         } else if (history.value.length > 0 && history.value[0]?.params) {
-          useParams(history.value[0].params);
+          useParams(history.value[0].params, false);
         }
       }
     } catch (err: any) {
@@ -502,10 +502,13 @@ export const useGenerationStore = defineStore('generation', () => {
     params.mask = undefined;
   };
 
-  const useParams = (p: GenerationParams | GeneratedImage | any) => {
+  const useParams = (p: GenerationParams | GeneratedImage | any, keepSeed = false) => {
     const targetParams = p?.params ? p.params : p;
     if (!targetParams) return;
     Object.assign(params, targetParams);
+    if (!keepSeed) {
+      params.seed = -1; // 默认还原为随机种子(-1)，防止复用参数时误锁死固定种子
+    }
     if (params.characters) {
       params.characters = params.characters.map(c => ({
         ...c,
