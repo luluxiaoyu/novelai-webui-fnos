@@ -1,16 +1,28 @@
 #!/bin/bash
 
-# Prefer system node or fnOS nodejs runtime
-if ! command -v node >/dev/null 2>&1; then
-    BASE_DIR="/var/apps"
-    for node_dir in "${BASE_DIR}/nodejs"*/target/bin "/opt/node/bin"; do
-        if [ -x "${node_dir}/node" ]; then
-            export PATH="${node_dir}:$PATH"
+# 1. 优先加载 fnOS 官方 Node.js 运行时路径与标准系统路径
+export PATH="/var/apps/nodejs_v22/target/bin:/var/apps/nodejs_v24/target/bin:/var/apps/nodejs_v20/target/bin:/var/apps/nodejs/target/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+# 2. 定位可用 node 二进制执行文件
+NODE_BIN="node"
+if command -v node >/dev/null 2>&1; then
+    NODE_BIN="$(command -v node)"
+else
+    for candidate in \
+        /var/apps/nodejs_v22/target/bin/node \
+        /var/apps/nodejs_v24/target/bin/node \
+        /var/apps/nodejs_v20/target/bin/node \
+        /var/apps/nodejs*/target/bin/node \
+        /usr/local/bin/node \
+        /usr/bin/node \
+        /opt/node/bin/node; do
+        if [ -x "$candidate" ]; then
+            NODE_BIN="$candidate"
+            export PATH="$(dirname "$candidate"):$PATH"
             break
         fi
     done
 fi
-export PATH="/usr/local/bin:/usr/bin:$PATH"
 
 TRIM_PKGVAR="${TRIM_PKGVAR:-./var}"
 TRIM_APPDEST="${TRIM_APPDEST:-.}"
@@ -80,7 +92,11 @@ case "$1" in
         # 清理超出 5 份的历史运行日志
         ls -t "${SHARE_DIR}/logs"/server_*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
 
-        nohup node "$SERVER_JS" >> "$LOG_FILE" 2>&1 &
+        if ! command -v "$NODE_BIN" >/dev/null 2>&1 && [ ! -x "$NODE_BIN" ]; then
+            echo "[Error] Node.js 运行时未找到！请确保在飞牛应用中心已安装 Node.js v22 (nodejs_v22)。" >> "$LOG_FILE"
+        fi
+
+        nohup "$NODE_BIN" "$SERVER_JS" >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
 
         # Wait up to 5 seconds for socket or startup

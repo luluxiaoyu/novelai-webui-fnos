@@ -10,4 +10,5 @@ distributor=luluxiaoyu
 distributor_url=https://github.com/luluxiaoyu/novelai-webui-fnos
 desktop_uidir=ui
 desktop_applaunchname=novelai.Application
+install_dep_apps=nodejs_v22
 ctl_stop=true
