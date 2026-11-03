@@ -171,7 +171,15 @@ router.get('/profiles/data', (req, res) => {
   try {
     const cfg = getConfig();
     const profile = req.query.profile || cfg.activeProfile || 'Default';
-    const data = profileManager.getProfileData(profile);
+    const limitNum = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(limitNum) ? limitNum : undefined;
+    const offsetNum = parseInt(req.query.offset, 10);
+    const offset = Number.isFinite(offsetNum) ? offsetNum : undefined;
+    const pageNum = parseInt(req.query.page, 10);
+    const page = Number.isFinite(pageNum) ? pageNum : undefined;
+    const pageSizeNum = parseInt(req.query.pageSize, 10);
+    const pageSize = Number.isFinite(pageSizeNum) ? pageSizeNum : undefined;
+    const data = profileManager.getProfileData(profile, { limit, offset, page, pageSize });
     res.json({ success: true, profile, data });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -190,38 +198,71 @@ router.post('/profiles/data', (req, res) => {
   }
 });
 
+// Dedicated history query and pagination endpoint
+router.get('/profiles/history', (req, res) => {
+  try {
+    const cfg = getConfig();
+    const profile = req.query.profile || cfg.activeProfile || 'Default';
+    const pageNum = parseInt(req.query.page, 10);
+    const page = Number.isFinite(pageNum) && pageNum >= 1 ? pageNum : 1;
+    const rawPageSize = parseInt(req.query.pageSize || req.query.limit, 10);
+    const pageSize = Number.isFinite(rawPageSize) && rawPageSize >= 1 ? rawPageSize : 50;
+    const offsetNum = parseInt(req.query.offset, 10);
+    const offset = Number.isFinite(offsetNum) && offsetNum >= 0 ? offsetNum : undefined;
+    const search = req.query.search || '';
+    const sort = req.query.sort || 'desc';
+    const isUpscaled = req.query.isUpscaled !== undefined ? (req.query.isUpscaled === 'true' || req.query.isUpscaled === '1') : undefined;
+    
+    let timeFilter;
+    if (req.query.startTime || req.query.endTime) {
+      const sNum = parseInt(req.query.startTime, 10);
+      const eNum = parseInt(req.query.endTime, 10);
+      timeFilter = {
+        start: Number.isFinite(sNum) ? sNum : undefined,
+        end: Number.isFinite(eNum) ? eNum : undefined
+      };
+    }
+
+    const result = profileManager.getHistory(profile, { page, pageSize, offset, search, sort, isUpscaled, timeFilter });
+    res.json({ success: true, profile, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Save single generated image to NAS disk and history
 router.post('/profiles/images/save', (req, res) => {
   try {
     const cfg = getConfig();
     const { profile, item } = req.body || {};
     const target = profile || cfg.activeProfile || 'Default';
-    if (!item || !item.image) {
+    const rawImage = item ? (item.image || item.url) : null;
+    if (!item || !rawImage) {
       return res.status(400).json({ error: 'Missing image data' });
     }
 
     const imgId = item.id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    let rawBase64 = item.image;
+    let rawBase64 = rawImage;
     if (typeof rawBase64 === 'string' && rawBase64.includes(',')) {
       rawBase64 = rawBase64.split(',')[1];
     }
     const buf = Buffer.from(rawBase64, 'base64');
     const imgUrl = profileManager.saveGeneratedImageFile(target, imgId, buf);
 
-    // Append to profile history in data.json
+    // Record directly in SQLite history
     const historyItem = {
+      ...item,
       id: imgId,
       url: imgUrl,
+      prompt: item.prompt || item.params?.prompt || '',
+      negative_prompt: item.negative_prompt || item.params?.negative_prompt || item.params?.uc || '',
+      model: item.model || item.params?.model || '',
       params: item.params || {},
-      timestamp: item.timestamp || Date.now()
+      timestamp: item.timestamp || Date.now(),
+      isUpscaled: Boolean(item.isUpscaled || item.params?.is_upscaled)
     };
 
-    const currentData = profileManager.getProfileData(target);
-    const history = Array.isArray(currentData.history) ? currentData.history : [];
-    if (!history.some(h => String(h.id) === String(imgId))) {
-      history.unshift(historyItem);
-      profileManager.saveProfileData(target, { ...currentData, history });
-    }
+    profileManager.addHistoryItem(target, historyItem);
 
     res.json({ success: true, url: imgUrl, item: historyItem });
   } catch (err) {

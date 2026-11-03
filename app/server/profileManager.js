@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getConfig, updateConfig } = require('./configManager');
+const profileDb = require('./profileDb');
 
 function getStoragePath() {
   const cfg = getConfig();
@@ -32,6 +33,11 @@ function getProfileDir(profileName) {
   return targetDir;
 }
 
+function getProfileDbPath(profileName) {
+  const profileDir = getProfileDir(profileName);
+  return path.join(profileDir, 'profile.db');
+}
+
 function getProfileDataFile(profileName) {
   const profileDir = getProfileDir(profileName);
   return path.join(profileDir, 'data.json');
@@ -60,6 +66,16 @@ function listProfiles() {
     profiles.unshift('Default');
   }
 
+  // Ensure all existing profiles are initialized / silently migrated if data.json exists
+  for (const p of profiles) {
+    try {
+      const pDir = path.join(profilesDir, p);
+      profileDb.getDb(pDir, p);
+    } catch (err) {
+      console.warn(`[ProfileManager] Warning initializing DB for profile "${p}":`, err.message);
+    }
+  }
+
   const cfg = getConfig();
   let activeProfile = cfg.activeProfile || 'Default';
   if (!profiles.includes(activeProfile)) {
@@ -85,8 +101,8 @@ function createProfile(name) {
   }
 
   fs.mkdirSync(path.join(targetDir, 'images'), { recursive: true });
-  const dataFile = path.join(targetDir, 'data.json');
-  fs.writeFileSync(dataFile, JSON.stringify(getInitialData(), null, 2), 'utf8');
+  // Initialize SQLite database
+  profileDb.getDb(targetDir, sanitized);
   return sanitized;
 }
 
@@ -100,6 +116,9 @@ function deleteProfile(name) {
   if (!fs.existsSync(targetDir)) {
     return false;
   }
+
+  // Close DB connection before deleting directory
+  profileDb.closeDb(targetDir);
 
   fs.rmSync(targetDir, { recursive: true, force: true });
 
@@ -131,7 +150,14 @@ function renameProfile(oldName, newName) {
     throw new Error(`存档 "${newSanitized}" 已存在`);
   }
 
+  // Close DB connection before renaming directory
+  profileDb.closeDb(oldDir);
+
   fs.renameSync(oldDir, newDir);
+
+  // Initialize DB connection with new directory
+  const newDb = profileDb.getDb(newDir, newSanitized);
+  profileDb.updateHistoryProfileUrl(newDb, oldSanitized, newSanitized);
 
   const cfg = getConfig();
   if (cfg.activeProfile === oldSanitized) {
@@ -151,110 +177,150 @@ function switchProfile(name) {
   return sanitized;
 }
 
-function getProfileData(profileName) {
-  const dataFile = getProfileDataFile(profileName);
-  if (fs.existsSync(dataFile)) {
+function getProfileData(profileName, options = {}) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  const targetDir = getProfileDir(sanitized);
+  const db = profileDb.getDb(targetDir, sanitized);
+
+  const promptHistory = profileDb.getAllPromptHistory(db);
+  const promptGroups = profileDb.getAllPromptGroups(db);
+  const customStyles = profileDb.getAllStyles(db);
+  const customCharacters = profileDb.getAllCharacters(db);
+  const historyResult = profileDb.getHistory(db, options);
+  const settings = profileDb.getSettings(db);
+
+  let params = {};
+  if (settings.params) {
     try {
-      const content = fs.readFileSync(dataFile, 'utf8');
-      const parsed = JSON.parse(content);
-      const data = { ...getInitialData(), ...parsed };
-      if (Array.isArray(data.history)) {
-        data.history = data.history.map(item => {
-          if (item && item.isNew !== undefined) {
-            const clean = { ...item };
-            delete clean.isNew;
-            return clean;
-          }
-          return item;
-        });
-      }
-      return data;
-    } catch (err) {
-      console.error(`[ProfileManager] Error reading ${dataFile}:`, err.message);
-    }
+      params = JSON.parse(settings.params);
+    } catch {}
   }
-  return getInitialData();
+
+  const data = {
+    params,
+    promptHistory,
+    savedPromptGroups: promptGroups.map(g => g.name),
+    promptGroups,
+    customCharacters,
+    customStyles,
+    history: historyResult.history
+  };
+
+  if (options.limit !== undefined || options.pageSize !== undefined || options.page !== undefined) {
+    data.pagination = {
+      total: historyResult.total,
+      page: historyResult.page,
+      pageSize: historyResult.pageSize,
+      totalPages: historyResult.totalPages
+    };
+  }
+
+  return data;
 }
 
 function saveProfileData(profileName, data) {
   const sanitized = sanitizeProfileName(profileName) || 'Default';
-  const dataFile = getProfileDataFile(sanitized);
   const profileDir = getProfileDir(sanitized);
   const imagesDir = path.join(profileDir, 'images');
+  const db = profileDb.getDb(profileDir, sanitized);
 
-  // Read current existing data so partial updates don't overwrite history
-  const current = getProfileData(sanitized);
-  const merged = { ...current };
+  if (data.params && typeof data.params === 'object') {
+    profileDb.saveSetting(db, 'params', data.params);
+  }
 
-  if (Array.isArray(data.promptHistory)) merged.promptHistory = data.promptHistory;
-  if (Array.isArray(data.savedPromptGroups)) merged.savedPromptGroups = data.savedPromptGroups;
-  if (Array.isArray(data.customCharacters)) merged.customCharacters = data.customCharacters;
-  if (Array.isArray(data.customStyles)) merged.customStyles = data.customStyles;
+  if (Array.isArray(data.promptHistory)) {
+    profileDb.savePromptHistory(db, data.promptHistory);
+  }
+
+  if (Array.isArray(data.promptGroups) && data.promptGroups.length > 0) {
+    profileDb.savePromptGroups(db, data.promptGroups);
+  } else if (Array.isArray(data.savedPromptGroups)) {
+    profileDb.savePromptGroups(db, data.savedPromptGroups);
+  }
+
+  if (Array.isArray(data.customCharacters)) {
+    profileDb.saveCharacters(db, data.customCharacters);
+  }
+
+  if (Array.isArray(data.customStyles)) {
+    profileDb.saveStyles(db, data.customStyles);
+  }
 
   if (Array.isArray(data.history)) {
-    // Process history: if any item has a data URL, persist as PNG file to disk and replace url
     const processedHistory = data.history.map(item => {
       if (!item) return item;
       const cleanItem = { ...item };
       delete cleanItem.isNew;
+      let rawBase64 = null;
       if (typeof cleanItem.url === 'string' && cleanItem.url.startsWith('data:image/')) {
+        rawBase64 = cleanItem.url.split(',')[1];
+      } else if (typeof cleanItem.image === 'string' && cleanItem.image.startsWith('data:image/')) {
+        rawBase64 = cleanItem.image.split(',')[1];
+      }
+
+      if (rawBase64) {
         try {
-          const base64Data = cleanItem.url.split(',')[1];
-          if (base64Data) {
-            const buf = Buffer.from(base64Data, 'base64');
-            const imgId = cleanItem.id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-            const imgPath = path.join(imagesDir, `${imgId}.png`);
-            fs.writeFileSync(imgPath, buf);
-            return {
-              ...cleanItem,
-              id: imgId,
-              url: `/api/images/${encodeURIComponent(sanitized)}/${encodeURIComponent(imgId)}.png`
-            };
-          }
+          const buf = Buffer.from(rawBase64, 'base64');
+          const imgId = cleanItem.id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const imgPath = path.join(imagesDir, `${imgId}.png`);
+          fs.writeFileSync(imgPath, buf);
+          cleanItem.id = imgId;
+          cleanItem.url = `/api/images/${encodeURIComponent(sanitized)}/${encodeURIComponent(imgId)}.png`;
         } catch (e) {
           console.error('[ProfileManager] Failed to save base64 history image to disk:', e.message);
         }
       }
       return cleanItem;
     });
-    merged.history = processedHistory;
+
+    profileDb.addHistoryItems(db, processedHistory);
   }
 
-  fs.writeFileSync(dataFile, JSON.stringify(merged, null, 2), 'utf8');
   return true;
+}
+
+function addHistoryItem(profileName, item) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  const profileDir = getProfileDir(sanitized);
+  const db = profileDb.getDb(profileDir, sanitized);
+  return profileDb.addHistoryItem(db, item);
+}
+
+function getHistory(profileName, options) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  const profileDir = getProfileDir(sanitized);
+  const db = profileDb.getDb(profileDir, sanitized);
+  return profileDb.getHistory(db, options);
 }
 
 function saveGeneratedImageFile(profileName, id, buffer) {
   const sanitized = sanitizeProfileName(profileName) || 'Default';
   const profileDir = getProfileDir(sanitized);
   const imagesDir = path.join(profileDir, 'images');
-  const imgPath = path.join(imagesDir, `${id}.png`);
+  const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '') || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
+  const imgPath = path.join(imagesDir, fileName);
   fs.writeFileSync(imgPath, buffer);
-  return `/api/images/${encodeURIComponent(sanitized)}/${encodeURIComponent(id)}.png`;
+  return `/api/images/${encodeURIComponent(sanitized)}/${encodeURIComponent(cleanId.endsWith('.png') ? cleanId.slice(0, -4) : cleanId)}.png`;
 }
 
 function deleteHistoryItem(profileName, id) {
   const sanitized = sanitizeProfileName(profileName) || 'Default';
   const profileDir = getProfileDir(sanitized);
   const imagesDir = path.join(profileDir, 'images');
-  const cleanId = String(id).replace(/[^a-zA-Z0-9_-]/g, '');
+  const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '');
+  const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
 
   // Delete image file if exists
-  const imgPath = path.join(imagesDir, `${cleanId}.png`);
+  const imgPath = path.join(imagesDir, fileName);
   if (fs.existsSync(imgPath)) {
     try {
       fs.unlinkSync(imgPath);
     } catch (e) {}
   }
 
-  // Also remove from data.json history
-  const data = getProfileData(sanitized);
-  if (Array.isArray(data.history)) {
-    data.history = data.history.filter(h => h && String(h.id) !== String(id));
-    const dataFile = getProfileDataFile(sanitized);
-    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2), 'utf8');
-  }
-  return true;
+  const db = profileDb.getDb(profileDir, sanitized);
+  return profileDb.deleteHistoryItem(db, id);
 }
 
 function batchDeleteHistoryItems(profileName, ids) {
@@ -263,11 +329,10 @@ function batchDeleteHistoryItems(profileName, ids) {
   const profileDir = getProfileDir(sanitized);
   const imagesDir = path.join(profileDir, 'images');
 
-  const idSet = new Set(ids.map(i => String(i)));
-
   for (const id of ids) {
-    const cleanId = String(id).replace(/[^a-zA-Z0-9_-]/g, '');
-    const imgPath = path.join(imagesDir, `${cleanId}.png`);
+    const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '');
+    const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
+    const imgPath = path.join(imagesDir, fileName);
     if (fs.existsSync(imgPath)) {
       try {
         fs.unlinkSync(imgPath);
@@ -275,13 +340,8 @@ function batchDeleteHistoryItems(profileName, ids) {
     }
   }
 
-  const data = getProfileData(sanitized);
-  if (Array.isArray(data.history)) {
-    data.history = data.history.filter(h => h && !idSet.has(String(h.id)));
-    const dataFile = getProfileDataFile(sanitized);
-    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2), 'utf8');
-  }
-  return true;
+  const db = profileDb.getDb(profileDir, sanitized);
+  return profileDb.batchDeleteHistoryItems(db, ids);
 }
 
 function getImagePath(profileName, id) {
@@ -298,6 +358,10 @@ function getImagePath(profileName, id) {
 
 module.exports = {
   getProfilesDir,
+  getProfileDir,
+  getProfileDbPath,
+  getProfileDataFile,
+  getInitialData,
   listProfiles,
   createProfile,
   deleteProfile,
@@ -305,6 +369,8 @@ module.exports = {
   switchProfile,
   getProfileData,
   saveProfileData,
+  addHistoryItem,
+  getHistory,
   saveGeneratedImageFile,
   deleteHistoryItem,
   batchDeleteHistoryItems,

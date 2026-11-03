@@ -438,11 +438,7 @@ async function upscaleImage(req, res) {
 
       // Record in profile history
       try {
-        const profileData = profileManager.getProfileData(profile);
-        const currentHistory = Array.isArray(profileData.history) ? profileData.history : [];
-        profileManager.saveProfileData(profile, {
-          history: [generatedItem, ...currentHistory.slice(0, 499)]
-        });
+        profileManager.addHistoryItem(profile, generatedItem);
       } catch (historyErr) {
         console.warn('[Proxy] Failed to record upscale to profile history:', historyErr.message);
       }
