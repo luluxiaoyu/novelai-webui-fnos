@@ -42,9 +42,23 @@ jobs:
         run: |
           node scripts/build_fpk.js
 
-      - name: Upload Dev FPK Packages
+      - name: Upload All-Arch FPK
         uses: actions/upload-artifact@v4
         with:
-          name: novelai-dev-packages
-          path: dist_fpk/*.fpk
+          name: novelai-fpk-all
+          path: dist_fpk/*_all.fpk
+          retention-days: 14
+
+      - name: Upload AMD64 (x86_64) FPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: novelai-fpk-amd64
+          path: dist_fpk/*_amd64.fpk
+          retention-days: 14
+
+      - name: Upload ARM64 FPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: novelai-fpk-arm64
+          path: dist_fpk/*_arm64.fpk
           retention-days: 14
