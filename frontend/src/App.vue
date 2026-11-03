@@ -1321,8 +1321,9 @@ watch(
               Anlas: {{ authStore.anlas.toLocaleString() }}
             </span>
 
-            <!-- V5 额度单行徽章 (与其它徽章等高，点击打开完整额度详情弹窗) -->
+            <!-- V5 额度单行徽章 (会员订阅层级大于 0 时展示) -->
             <button 
+              v-if="authStore.subscriptionTier > 0"
               @click="showV5UsageModal = true"
               type="button"
               class="text-xs bg-purple-50 hover:bg-purple-100/80 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 px-2.5 py-1.5 rounded-md border border-purple-200 hover:border-purple-300 dark:border-purple-800/60 dark:hover:border-purple-700 font-medium inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition cursor-pointer shadow-sm select-none"
