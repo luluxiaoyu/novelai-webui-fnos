@@ -5,9 +5,9 @@ app/ui/dist/
 frontend/dist/
 frontend/node_modules/
 app/server/node_modules/
-data/
-var/
-logs/
+/data/
+/var/
+/logs/
 app.sock
 *.log
 *.pid
