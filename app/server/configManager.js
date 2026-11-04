@@ -38,10 +38,31 @@ try {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 } catch {}
 
+const DEFAULT_IMAGE_SUBDIR_PATTERN = '/{year}/{month}/';
+
+function normalizeImageSubdirPattern(rawPattern) {
+  if (rawPattern === undefined || rawPattern === null || typeof rawPattern !== 'string') {
+    return DEFAULT_IMAGE_SUBDIR_PATTERN;
+  }
+  let p = rawPattern.replace(/\\/g, '/').trim();
+  if (!p) {
+    return DEFAULT_IMAGE_SUBDIR_PATTERN;
+  }
+  // Disallow unsafe characters (keep safe characters and variable braces)
+  p = p.replace(/[<>:"|?*\x00-\x1F]/g, '');
+  // Disallow directory traversal & empty/dot-only segments
+  const segments = p.split('/').map(s => s.trim()).filter(s => s && !/^\.+$/.test(s));
+  if (segments.length === 0) {
+    return DEFAULT_IMAGE_SUBDIR_PATTERN;
+  }
+  return '/' + segments.join('/') + '/';
+}
+
 const DEFAULT_CONFIG = {
   apiToken: '',
   apiBaseUrl: 'https://image.novelai.net',
   storagePath: DATA_DIR,
+  imageSubdirPattern: DEFAULT_IMAGE_SUBDIR_PATTERN,
   activeProfile: 'Default',
   enableEncryption: false,
   encryptionKey: 'nahida1027',
@@ -57,6 +78,7 @@ function loadConfig() {
       const content = fs.readFileSync(CONFIG_FILE, 'utf8');
       const parsed = JSON.parse(content);
       cachedConfig = { ...DEFAULT_CONFIG, ...parsed };
+      cachedConfig.imageSubdirPattern = normalizeImageSubdirPattern(cachedConfig.imageSubdirPattern);
 
       // If user-facing share directory is available or invalid path, fallback to DATA_DIR
       const currentShare = getDetectedShareDir();
@@ -100,7 +122,11 @@ function getConfig() {
 
 function updateConfig(partial) {
   const current = getConfig();
-  const updated = { ...current, ...partial };
+  const toMerge = { ...partial };
+  if (toMerge.imageSubdirPattern !== undefined) {
+    toMerge.imageSubdirPattern = normalizeImageSubdirPattern(toMerge.imageSubdirPattern);
+  }
+  const updated = { ...current, ...toMerge };
   saveConfig(updated);
   return updated;
 }
@@ -110,6 +136,8 @@ module.exports = {
   PKG_VAR,
   DATA_DIR,
   CONFIG_FILE,
+  DEFAULT_IMAGE_SUBDIR_PATTERN,
+  normalizeImageSubdirPattern,
   getConfig,
   updateConfig,
   saveConfig

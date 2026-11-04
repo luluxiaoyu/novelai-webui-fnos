@@ -974,6 +974,70 @@ function getSettings(db) {
   return settings;
 }
 
+function getHistoryUrlById(db, id) {
+  if (!id) return null;
+  const strId = String(id).trim();
+  const altId = strId.endsWith('.png') ? strId.slice(0, -4) : `${strId}.png`;
+  const baseId = strId.includes('/') ? path.basename(strId) : null;
+  const baseAltId = baseId ? (baseId.endsWith('.png') ? baseId.slice(0, -4) : `${baseId}.png`) : null;
+  try {
+    const row = db.prepare(`SELECT url FROM history WHERE id = ? OR id = ? OR id = ? OR id = ? LIMIT 1`).get(
+      strId,
+      altId,
+      baseId || strId,
+      baseAltId || altId
+    );
+    return row ? row.url : null;
+  } catch {
+    return null;
+  }
+}
+
+function getHistoryUrlsByIds(db, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return {};
+  const validIds = ids.filter(i => i !== undefined && i !== null && String(i).trim() !== '');
+  if (validIds.length === 0) return {};
+
+  const map = {};
+  const chunkSize = 400;
+  for (let i = 0; i < validIds.length; i += chunkSize) {
+    const chunk = validIds.slice(i, i + chunkSize);
+    const allPossibleIds = new Set();
+    for (const id of chunk) {
+      const s = String(id).trim();
+      allPossibleIds.add(s);
+      if (s.includes('/')) {
+        const base = path.basename(s);
+        allPossibleIds.add(base);
+        if (base.endsWith('.png')) {
+          allPossibleIds.add(base.slice(0, -4));
+        } else {
+          allPossibleIds.add(`${base}.png`);
+        }
+      }
+      if (s.endsWith('.png')) {
+        allPossibleIds.add(s.slice(0, -4));
+      } else {
+        allPossibleIds.add(`${s}.png`);
+      }
+    }
+    const arr = Array.from(allPossibleIds);
+    const placeholders = arr.map(() => '?').join(',');
+    try {
+      const rows = db.prepare(`SELECT id, url FROM history WHERE id IN (${placeholders})`).all(...arr);
+      for (const r of rows) {
+        map[r.id] = r.url;
+        if (r.id.endsWith('.png')) {
+          map[r.id.slice(0, -4)] = r.url;
+        } else {
+          map[`${r.id}.png`] = r.url;
+        }
+      }
+    } catch {}
+  }
+  return map;
+}
+
 function saveSetting(db, key, value) {
   const strVal = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
   db.prepare(`INSERT OR REPLACE INTO profile_settings (key, value) VALUES (?, ?)`).run(key, strVal);
@@ -985,6 +1049,8 @@ module.exports = {
   closeAllDbs,
   migrateProfileIfNeeded,
   getHistory,
+  getHistoryUrlById,
+  getHistoryUrlsByIds,
   addHistoryItem,
   addHistoryItems,
   deleteHistoryItem,

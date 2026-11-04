@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, watch, computed } from 'vue';
 import { useAuthStore } from '../stores/auth';
 import { encryptedAxios } from '../utils/api';
 import { 
   Sparkles, KeyRound, Globe, Folder, Eye, EyeOff, 
-  Check, Loader2, AlertCircle, ArrowRight
+  Check, Loader2, AlertCircle, ArrowRight, FolderTree
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -22,6 +22,77 @@ const apiToken = ref('');
 const showToken = ref(false);
 const apiBaseUrl = ref('https://image.novelai.net');
 const storagePath = ref('./data');
+const imageSubdirPattern = ref('/{year}/{month}/');
+
+const nowExample = new Date();
+const currentYear = String(nowExample.getFullYear());
+const currentMonth = String(nowExample.getMonth() + 1).padStart(2, '0');
+const currentDay = String(nowExample.getDate()).padStart(2, '0');
+
+const AVAILABLE_VARIABLES = [
+  { name: '{year}', desc: `年份 ${currentYear}` },
+  { name: '{month}', desc: `月份 ${currentMonth}` },
+  { name: '{day}', desc: `日期 ${currentDay}` },
+  { name: '{date}', desc: `年月日 ${currentYear}-${currentMonth}-${currentDay}` },
+  { name: '{model}', desc: '模型标识' },
+  { name: '{profile}', desc: '当前存档名' }
+];
+
+const insertVariable = (varName: string) => {
+  let cur = imageSubdirPattern.value || '';
+  if (cur.endsWith('/')) {
+    cur += varName + '/';
+  } else {
+    cur += '/' + varName + '/';
+  }
+  cur = cur.replace(/\/+/g, '/');
+  imageSubdirPattern.value = cur;
+};
+
+const handlePatternInput = () => {
+  if (imageSubdirPattern.value.includes('\\')) {
+    imageSubdirPattern.value = imageSubdirPattern.value.replace(/\\/g, '/');
+  }
+};
+
+const handlePatternBlur = () => {
+  let p = imageSubdirPattern.value.replace(/\\/g, '/').trim();
+  p = p.replace(/[<>:"|?*\x00-\x1F]/g, '');
+  const segments = p.split('/').map(s => s.trim()).filter(s => s && !/^\.+$/.test(s));
+  if (segments.length === 0) {
+    p = '/{year}/{month}/';
+  } else {
+    p = '/' + segments.join('/') + '/';
+  }
+  imageSubdirPattern.value = p;
+};
+
+const previewPath = computed(() => {
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+  const model = 'nai-diffusion-4-full';
+  const profile = 'Default';
+
+  let p = (imageSubdirPattern.value || '/{year}/{month}/').replace(/\\/g, '/').trim();
+  p = p.replace(/[<>:"|?*\x00-\x1F]/g, '');
+  const segments = p.split('/').map(s => s.trim()).filter(s => s && !/^\.+$/.test(s));
+  const rawPattern = segments.length === 0 ? '{year}/{month}' : segments.join('/');
+
+  const resolved = rawPattern
+    .replace(/\{year\}/gi, year)
+    .replace(/\{month\}/gi, month)
+    .replace(/\{day\}/gi, day)
+    .replace(/\{date\}/gi, dateStr)
+    .replace(/\{model\}/gi, model)
+    .replace(/\{profile\}/gi, profile)
+    .replace(/\/+/g, '/');
+
+  const cleanBase = (storagePath.value || './data').replace(/\/+$/, '');
+  return `${cleanBase}/profiles/${profile}/${resolved}/image_example.png`.replace(/\/+/g, '/');
+});
 
 const isTestingUrl = ref(false);
 const urlTestResult = ref<{ success: boolean; message: string } | null>(null);
@@ -40,6 +111,7 @@ const loadDefaults = async () => {
       if (s.apiToken) apiToken.value = s.apiToken;
       if (s.apiBaseUrl) apiBaseUrl.value = s.apiBaseUrl;
       if (s.storagePath) storagePath.value = s.storagePath;
+      if (s.imageSubdirPattern) imageSubdirPattern.value = s.imageSubdirPattern;
     }
   } catch (err: any) {
     console.warn('[WelcomeModal] Failed to load settings:', err.message);
@@ -105,7 +177,8 @@ const handleSave = async () => {
     const payload = {
       apiToken: tokenTrimmed,
       apiBaseUrl: apiBaseUrl.value.trim() || 'https://image.novelai.net',
-      storagePath: storagePath.value.trim() || './data'
+      storagePath: storagePath.value.trim() || './data',
+      imageSubdirPattern: imageSubdirPattern.value.trim() || '/{year}/{month}/'
     };
 
     const res = await encryptedAxios({
@@ -115,6 +188,9 @@ const handleSave = async () => {
     });
 
     if (res.data && res.data.success) {
+      if (res.data.settings?.imageSubdirPattern) {
+        imageSubdirPattern.value = res.data.settings.imageSubdirPattern;
+      }
       authStore.token = tokenTrimmed;
       await authStore.fetchUserData(tokenTrimmed);
       emit('completed');
@@ -246,6 +322,67 @@ const handleSkip = () => {
           </div>
           <p class="text-[11px] text-gray-400 dark:text-gray-500 leading-tight">
             画作原图、生成记录与预设将持久化保存在此目录，系统已自动预设飞牛 OS 共享路径。
+          </p>
+        </div>
+
+        <!-- 4. 图片保存子目录规则 -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <label class="block font-semibold text-gray-800 dark:text-gray-200 text-xs">
+              图片保存子目录规则
+            </label>
+            <button 
+              type="button" 
+              @click="imageSubdirPattern = '/{year}/{month}/'"
+              class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              默认 (/{year}/{month}/)
+            </button>
+          </div>
+          <div class="relative">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+              <FolderTree class="w-4 h-4" />
+            </div>
+            <input 
+              type="text"
+              v-model="imageSubdirPattern"
+              @input="handlePatternInput"
+              @blur="handlePatternBlur"
+              placeholder="/{year}/{month}/"
+              class="w-full bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl pl-9 pr-3 py-2.5 text-xs sm:text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition font-mono"
+            />
+          </div>
+
+          <!-- 变量快捷标签 -->
+          <div class="space-y-1 pt-0.5">
+            <div class="text-[10px] text-gray-400">点击标签快捷添加常用变量：</div>
+            <div class="flex flex-wrap gap-1">
+              <button
+                v-for="v in AVAILABLE_VARIABLES"
+                :key="v.name"
+                type="button"
+                @click="insertVariable(v.name)"
+                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-gray-100 dark:bg-gray-800 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-950 dark:hover:text-blue-300 text-gray-600 dark:text-gray-300 text-[11px] font-mono transition border border-gray-200 dark:border-gray-700"
+                :title="v.desc"
+              >
+                <span>{{ v.name }}</span>
+                <span class="text-[9px] text-gray-400 font-sans">({{ v.desc }})</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 实时保存路径预览 -->
+          <div class="p-2.5 bg-gray-50/90 dark:bg-gray-950/60 rounded-xl border border-gray-200 dark:border-gray-800 space-y-0.5">
+            <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+              <span>保存路径预览：</span>
+            </div>
+            <div class="font-mono text-[11px] text-blue-600 dark:text-blue-400 break-all select-all">
+              {{ previewPath }}
+            </div>
+          </div>
+
+          <p class="text-[11px] text-gray-400 dark:text-gray-500 leading-tight">
+            图片将自动分目录归档存放。反斜杠 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">\</code> 会自动转为正斜杠。
           </p>
         </div>
       </div>

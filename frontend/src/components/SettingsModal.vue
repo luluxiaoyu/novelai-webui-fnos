@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue';
+import { ref, watch, onMounted, computed } from 'vue';
 import { useAuthStore } from '../stores/auth';
 import { useProfileStore } from '../stores/profile';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
@@ -7,7 +7,7 @@ import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '..
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
-  Trash2, Edit3, Plus, Eye, EyeOff, Smartphone
+  Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -28,11 +28,82 @@ const apiToken = ref('');
 const showToken = ref(false);
 const apiBaseUrl = ref('https://image.novelai.net');
 const storagePath = ref('./data');
+const imageSubdirPattern = ref('/{year}/{month}/');
 const enableEncryption = ref(false);
 const encryptionKey = ref('nahida1027');
 const maxConcurrency = ref(1);
 const enableLogging = ref(true);
 const reduceMobileEffects = ref(getReduceMobileEffectsSetting());
+
+const nowExample = new Date();
+const currentYear = String(nowExample.getFullYear());
+const currentMonth = String(nowExample.getMonth() + 1).padStart(2, '0');
+const currentDay = String(nowExample.getDate()).padStart(2, '0');
+
+const AVAILABLE_VARIABLES = [
+  { name: '{year}', desc: `年份 ${currentYear}` },
+  { name: '{month}', desc: `月份 ${currentMonth}` },
+  { name: '{day}', desc: `日期 ${currentDay}` },
+  { name: '{date}', desc: `年月日 ${currentYear}-${currentMonth}-${currentDay}` },
+  { name: '{model}', desc: '模型标识' },
+  { name: '{profile}', desc: '当前存档名' }
+];
+
+const insertVariable = (varName: string) => {
+  let cur = imageSubdirPattern.value || '';
+  if (cur.endsWith('/')) {
+    cur += varName + '/';
+  } else {
+    cur += '/' + varName + '/';
+  }
+  cur = cur.replace(/\/+/g, '/');
+  imageSubdirPattern.value = cur;
+};
+
+const handlePatternInput = () => {
+  if (imageSubdirPattern.value.includes('\\')) {
+    imageSubdirPattern.value = imageSubdirPattern.value.replace(/\\/g, '/');
+  }
+};
+
+const handlePatternBlur = () => {
+  let p = imageSubdirPattern.value.replace(/\\/g, '/').trim();
+  p = p.replace(/[<>:"|?*\x00-\x1F]/g, '');
+  const segments = p.split('/').map(s => s.trim()).filter(s => s && !/^\.+$/.test(s));
+  if (segments.length === 0) {
+    p = '/{year}/{month}/';
+  } else {
+    p = '/' + segments.join('/') + '/';
+  }
+  imageSubdirPattern.value = p;
+};
+
+const previewPath = computed(() => {
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+  const model = 'nai-diffusion-4-full';
+  const profile = profileStore.currentProfile || 'Default';
+
+  let p = (imageSubdirPattern.value || '/{year}/{month}/').replace(/\\/g, '/').trim();
+  p = p.replace(/[<>:"|?*\x00-\x1F]/g, '');
+  const segments = p.split('/').map(s => s.trim()).filter(s => s && !/^\.+$/.test(s));
+  const rawPattern = segments.length === 0 ? '{year}/{month}' : segments.join('/');
+
+  const resolved = rawPattern
+    .replace(/\{year\}/gi, year)
+    .replace(/\{month\}/gi, month)
+    .replace(/\{day\}/gi, day)
+    .replace(/\{date\}/gi, dateStr)
+    .replace(/\{model\}/gi, model)
+    .replace(/\{profile\}/gi, profile)
+    .replace(/\/+/g, '/');
+
+  const cleanBase = (storagePath.value || './data').replace(/\/+$/, '');
+  return `${cleanBase}/profiles/${profile}/${resolved}/image_example.png`.replace(/\/+/g, '/');
+});
 
 watch(reduceMobileEffects, (val) => {
   setReduceMobileEffectsSetting(val);
@@ -62,6 +133,7 @@ const loadSettings = async () => {
       apiToken.value = s.apiToken || authStore.token || '';
       apiBaseUrl.value = s.apiBaseUrl || 'https://image.novelai.net';
       storagePath.value = s.storagePath || './data';
+      imageSubdirPattern.value = s.imageSubdirPattern || '/{year}/{month}/';
       enableEncryption.value = !!s.enableEncryption;
       encryptionKey.value = s.encryptionKey || 'nahida1027';
       maxConcurrency.value = Number(s.maxConcurrency) || 1;
@@ -163,6 +235,7 @@ const handleSaveSettings = async () => {
       apiToken: apiToken.value.trim(),
       apiBaseUrl: apiBaseUrl.value.trim(),
       storagePath: storagePath.value.trim(),
+      imageSubdirPattern: imageSubdirPattern.value.trim() || '/{year}/{month}/',
       enableEncryption: enableEncryption.value,
       encryptionKey: encryptionKey.value.trim(),
       maxConcurrency: Number(maxConcurrency.value) || 1,
@@ -180,6 +253,9 @@ const handleSaveSettings = async () => {
       setEncryptionConfig(payload.enableEncryption, payload.encryptionKey);
       if (payload.apiToken) {
         authStore.token = payload.apiToken;
+      }
+      if (res.data.settings?.imageSubdirPattern) {
+        imageSubdirPattern.value = res.data.settings.imageSubdirPattern;
       }
       setTimeout(() => {
         saveMessage.value = null;
@@ -375,6 +451,63 @@ const handleDeleteProfile = async (name: string) => {
             />
             <p class="text-xs text-gray-400 leading-relaxed">
               系统配置、各存档的索引数据及生成的图片文件将保存在该路径下的 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-gray-700 dark:text-gray-300">profiles/</code> 目录中。
+            </p>
+          </div>
+
+          <!-- 存档图片保存子目录结构 -->
+          <div class="space-y-2.5">
+            <div class="flex items-center justify-between">
+              <label class="block font-medium text-gray-700 dark:text-gray-300">
+                图片存档子目录规则
+              </label>
+              <button 
+                type="button" 
+                @click="imageSubdirPattern = '/{year}/{month}/'"
+                class="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                恢复默认 (/{year}/{month}/)
+              </button>
+            </div>
+            <input 
+              type="text"
+              v-model="imageSubdirPattern"
+              @input="handlePatternInput"
+              @blur="handlePatternBlur"
+              placeholder="/{year}/{month}/"
+              class="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors font-mono text-xs"
+            />
+
+            <!-- 变量标签 Chips -->
+            <div class="space-y-1.5">
+              <div class="text-[11px] text-gray-500 dark:text-gray-400">点击下方变量标签可快速插入：</div>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="v in AVAILABLE_VARIABLES"
+                  :key="v.name"
+                  type="button"
+                  @click="insertVariable(v.name)"
+                  class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-950 dark:hover:text-blue-300 text-gray-700 dark:text-gray-300 text-xs font-mono transition border border-gray-200 dark:border-gray-700"
+                  :title="v.desc"
+                >
+                  <span class="font-semibold">{{ v.name }}</span>
+                  <span class="text-[10px] text-gray-400 font-sans">({{ v.desc }})</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 实时路径预览 -->
+            <div class="p-3 bg-gray-50/90 dark:bg-gray-950/60 rounded-xl border border-gray-200 dark:border-gray-800 space-y-1">
+              <div class="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
+                <FolderTree class="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                <span>实时保存路径预览：</span>
+              </div>
+              <div class="font-mono text-xs text-blue-600 dark:text-blue-400 break-all select-all pl-5">
+                {{ previewPath }}
+              </div>
+            </div>
+
+            <p class="text-xs text-gray-400 leading-relaxed">
+              生成的图片将按此规则自动分类存放。严禁包含 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-gray-700 dark:text-gray-300">..</code> 跨目录路径，反斜杠 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-gray-700 dark:text-gray-300">\</code> 将自动修正为正斜杠。
             </p>
           </div>
 

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { getConfig, updateConfig } = require('./configManager');
+const { getConfig, updateConfig, DEFAULT_IMAGE_SUBDIR_PATTERN } = require('./configManager');
 const { queueManager } = require('./queueManager');
 const profileManager = require('./profileManager');
 const proxyClient = require('./proxyClient');
@@ -14,6 +14,7 @@ router.get('/settings', (req, res) => {
     apiToken: cfg.apiToken || '',
     apiBaseUrl: cfg.apiBaseUrl || 'https://image.novelai.net',
     storagePath: cfg.storagePath,
+    imageSubdirPattern: cfg.imageSubdirPattern || DEFAULT_IMAGE_SUBDIR_PATTERN,
     activeProfile: cfg.activeProfile || 'Default',
     enableEncryption: !!cfg.enableEncryption,
     encryptionKey: cfg.encryptionKey || 'nahida1027',
@@ -37,6 +38,31 @@ router.post('/settings', (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message || '保存设置失败' });
+  }
+});
+
+// GET /api/config and POST /api/config endpoints
+router.get('/config', (req, res) => {
+  const cfg = getConfig();
+  res.json({
+    success: true,
+    ...cfg,
+    config: cfg
+  });
+});
+
+router.post('/config', (req, res) => {
+  try {
+    const data = req.body?.config || req.body || {};
+    const updated = updateConfig(data);
+    res.json({
+      success: true,
+      message: '配置已成功保存',
+      ...updated,
+      config: updated
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '保存配置失败' });
   }
 });
 
@@ -247,7 +273,7 @@ router.post('/profiles/images/save', (req, res) => {
       rawBase64 = rawBase64.split(',')[1];
     }
     const buf = Buffer.from(rawBase64, 'base64');
-    const imgUrl = profileManager.saveGeneratedImageFile(target, imgId, buf);
+    const imgUrl = profileManager.saveGeneratedImageFile(target, imgId, buf, item);
 
     // Record directly in SQLite history
     const historyItem = {
@@ -271,18 +297,21 @@ router.post('/profiles/images/save', (req, res) => {
   }
 });
 
-// Delete single image from NAS disk and history
-router.delete('/profiles/images/:id', (req, res) => {
+// Delete single image from NAS disk and history (supports flat ID and nested subpath)
+const deleteImageHandler = (req, res) => {
   try {
     const cfg = getConfig();
-    const { id } = req.params;
+    const id = req.params[0] || req.params.id;
     const profile = req.query.profile || cfg.activeProfile || 'Default';
     profileManager.deleteHistoryItem(profile, id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+router.delete('/profiles/images/*', deleteImageHandler);
+router.delete('/profiles/images/:id', deleteImageHandler);
 
 // Batch delete images from NAS disk and history
 router.post('/profiles/images/delete-batch', (req, res) => {
@@ -297,16 +326,20 @@ router.post('/profiles/images/delete-batch', (req, res) => {
   }
 });
 
-// Direct Image File Serving
-router.get('/images/:profile/:id', (req, res) => {
-  const { profile, id } = req.params;
-  const imgPath = profileManager.getImagePath(profile, id);
+// Direct Image File Serving (supports wildcard/nested subpaths & flat paths)
+const serveImageHandler = (req, res) => {
+  const { profile } = req.params;
+  const subpath = req.params[0] || req.params.id;
+  const imgPath = profileManager.getImagePath(profile, subpath);
   if (!imgPath) {
     return res.status(404).send('Image not found');
   }
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(imgPath);
-});
+};
+
+router.get('/images/:profile/*', serveImageHandler);
+router.get('/images/:profile/:id', serveImageHandler);
 
 // ==================== Upstream Proxy Routes ====================
 

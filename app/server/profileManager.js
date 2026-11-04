@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { getConfig, updateConfig } = require('./configManager');
+const { getConfig, updateConfig, DEFAULT_IMAGE_SUBDIR_PATTERN, normalizeImageSubdirPattern } = require('./configManager');
 const profileDb = require('./profileDb');
 
 function getStoragePath() {
@@ -262,10 +262,8 @@ function saveProfileData(profileName, data) {
         try {
           const buf = Buffer.from(rawBase64, 'base64');
           const imgId = cleanItem.id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          const imgPath = path.join(imagesDir, `${imgId}.png`);
-          fs.writeFileSync(imgPath, buf);
           cleanItem.id = imgId;
-          cleanItem.url = `/api/images/${encodeURIComponent(sanitized)}/${encodeURIComponent(imgId)}.png`;
+          cleanItem.url = saveGeneratedImageFile(sanitized, imgId, buf, cleanItem);
         } catch (e) {
           console.error('[ProfileManager] Failed to save base64 history image to disk:', e.message);
         }
@@ -277,6 +275,107 @@ function saveProfileData(profileName, data) {
   }
 
   return true;
+}
+
+function findFileRecursive(dir, targetName, maxDepth = 6) {
+  if (maxDepth <= 0 || !fs.existsSync(dir)) return null;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isFile() && e.name === targetName) {
+        return path.join(dir, e.name);
+      }
+    }
+    for (const e of entries) {
+      if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+        const found = findFileRecursive(path.join(dir, e.name), targetName, maxDepth - 1);
+        if (found) return found;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function findAllFilesRecursive(dir, targetName, maxDepth = 6) {
+  const results = [];
+  if (maxDepth <= 0 || !fs.existsSync(dir)) return results;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isFile() && e.name === targetName) {
+        results.push(path.join(dir, e.name));
+      }
+    }
+    for (const e of entries) {
+      if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+        results.push(...findAllFilesRecursive(path.join(dir, e.name), targetName, maxDepth - 1));
+      }
+    }
+  } catch {}
+  return results;
+}
+
+const ALLOWED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
+
+function isPathInside(parentDir, targetPath) {
+  if (!parentDir || !targetPath) return false;
+  const rel = path.relative(parentDir, targetPath);
+  return !rel.startsWith('..') && !path.isAbsolute(rel) && rel !== '';
+}
+
+function isAllowedImageFile(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const ext = path.extname(filePath).toLowerCase();
+  if (!ALLOWED_IMAGE_EXTENSIONS.has(ext)) return false;
+  const base = path.basename(filePath).toLowerCase();
+  if (base.startsWith('profile.db') || base.startsWith('data.json') || base.startsWith('.')) return false;
+  return true;
+}
+
+function resolveImageSubdir(rawPattern, metadata = {}) {
+  const pattern = normalizeImageSubdirPattern(rawPattern);
+  const meta = typeof metadata === 'object' && metadata !== null ? metadata : {};
+  let d;
+  if (meta.timestamp) {
+    const num = Number(meta.timestamp);
+    if (!isNaN(num) && num > 0) {
+      d = new Date(num);
+    } else {
+      const parsed = new Date(meta.timestamp);
+      d = isNaN(parsed.getTime()) ? new Date() : parsed;
+    }
+  } else {
+    d = new Date();
+  }
+
+  const year = String(d.getFullYear());
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  const rawModel = meta.model || meta.params?.model || '';
+  const model = String(rawModel).trim().replace(/[/\\?%*:|"<>.]/g, '_') || 'default';
+
+  const rawProfile = meta.profile || 'Default';
+  const profile = sanitizeProfileName(rawProfile) || 'Default';
+
+  let resolved = pattern
+    .replace(/\{year\}/gi, year)
+    .replace(/\{month\}/gi, month)
+    .replace(/\{day\}/gi, day)
+    .replace(/\{date\}/gi, dateStr)
+    .replace(/\{model\}/gi, model)
+    .replace(/\{profile\}/gi, profile);
+
+  // Sanitize path separators and remove traversal
+  resolved = resolved.replace(/\\/g, '/').replace(/[<>:"|?*\x00-\x1F]/g, '');
+  const segments = resolved.split('/').map(s => s.trim()).filter(s => s && !/^\.+$/.test(s));
+
+  if (segments.length === 0) {
+    return `${year}/${month}`;
+  }
+
+  return segments.join('/');
 }
 
 function addHistoryItem(profileName, item) {
@@ -293,66 +392,278 @@ function getHistory(profileName, options) {
   return profileDb.getHistory(db, options);
 }
 
-function saveGeneratedImageFile(profileName, id, buffer) {
+function saveGeneratedImageFile(profileName, id, buffer, metadata = {}) {
   const sanitized = sanitizeProfileName(profileName) || 'Default';
   const profileDir = getProfileDir(sanitized);
-  const imagesDir = path.join(profileDir, 'images');
-  const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '') || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const meta = typeof metadata === 'object' && metadata !== null ? metadata : {};
+  let timestamp;
+  if (meta.timestamp) {
+    const num = Number(meta.timestamp);
+    if (!isNaN(num) && num > 0) {
+      timestamp = num;
+    } else {
+      const parsed = new Date(meta.timestamp);
+      timestamp = isNaN(parsed.getTime()) ? Date.now() : parsed.getTime();
+    }
+  } else {
+    timestamp = Date.now();
+  }
+  const model = meta.model || meta.params?.model || '';
+
+  const cfg = getConfig();
+  const pattern = cfg.imageSubdirPattern || DEFAULT_IMAGE_SUBDIR_PATTERN;
+  const relativeSubdir = resolveImageSubdir(pattern, { ...meta, timestamp, model, profile: sanitized });
+
+  const targetSubdir = path.resolve(profileDir, relativeSubdir);
+  const safeSubdir = isPathInside(profileDir, targetSubdir) ? targetSubdir : profileDir;
+
+  fs.mkdirSync(safeSubdir, { recursive: true });
+
+  let cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '').trim();
+  if (!cleanId || /^\.+$/.test(cleanId) || cleanId === '.png') {
+    cleanId = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  }
   const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
-  const imgPath = path.join(imagesDir, fileName);
-  fs.writeFileSync(imgPath, buffer);
-  return `/api/images/${encodeURIComponent(sanitized)}/${encodeURIComponent(cleanId.endsWith('.png') ? cleanId.slice(0, -4) : cleanId)}.png`;
+  const filePath = path.join(safeSubdir, fileName);
+  fs.writeFileSync(filePath, buffer);
+
+  const fileRelPath = path.relative(profileDir, filePath).replace(/\\/g, '/');
+  const urlSegments = fileRelPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return `/api/images/${encodeURIComponent(sanitized)}/${urlSegments}`;
 }
 
 function deleteHistoryItem(profileName, id) {
-  const sanitized = sanitizeProfileName(profileName) || 'Default';
-  const profileDir = getProfileDir(sanitized);
-  const imagesDir = path.join(profileDir, 'images');
-  const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '');
-  const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
+  if (!id || typeof id !== 'string') return false;
+  const trimmed = id.trim();
+  if (!trimmed) return false;
 
-  // Delete image file if exists
-  const imgPath = path.join(imagesDir, fileName);
-  if (fs.existsSync(imgPath)) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  const profileDir = path.resolve(getProfileDir(sanitized));
+  const db = profileDb.getDb(profileDir, sanitized);
+
+  let fileDeleted = false;
+
+  // 1. If id includes subpath (e.g. "2026/11/img123.png"), check direct relative path
+  if (trimmed.includes('/')) {
     try {
-      fs.unlinkSync(imgPath);
+      const decodedRel = decodeURIComponent(trimmed).replace(/\\/g, '/');
+      const directTarget = path.resolve(profileDir, decodedRel);
+      if (isPathInside(profileDir, directTarget) && isAllowedImageFile(directTarget) && fs.existsSync(directTarget) && fs.statSync(directTarget).isFile()) {
+        fs.unlinkSync(directTarget);
+        fileDeleted = true;
+      }
+    } catch {}
+  }
+
+  // 2. Resolve and delete by DB URL if recorded
+  const historyUrl = profileDb.getHistoryUrlById(db, trimmed) || (trimmed.includes('/') ? profileDb.getHistoryUrlById(db, path.basename(trimmed)) : null);
+  if (historyUrl) {
+    try {
+      const relFromUrl = decodeURIComponent(historyUrl.replace(/^.*\/api\/images\/[^/]+\//, ''));
+      const targetPath = path.resolve(profileDir, relFromUrl);
+      if (isPathInside(profileDir, targetPath) && isAllowedImageFile(targetPath) && fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+        fs.unlinkSync(targetPath);
+        fileDeleted = true;
+      }
     } catch (e) {}
   }
 
-  const db = profileDb.getDb(profileDir, sanitized);
-  return profileDb.deleteHistoryItem(db, id);
+  // 3. Check legacy and flat locations
+  const cleanId = path.basename(trimmed).replace(/[^a-zA-Z0-9_.-]/g, '');
+  if (cleanId && !/^\.+$/.test(cleanId)) {
+    const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
+
+    if (!fileDeleted && isAllowedImageFile(fileName)) {
+      const legacyPath = path.join(profileDir, 'images', fileName);
+      if (fs.existsSync(legacyPath) && fs.statSync(legacyPath).isFile()) {
+        try { fs.unlinkSync(legacyPath); fileDeleted = true; } catch (e) {}
+      }
+    }
+    if (!fileDeleted && isAllowedImageFile(fileName)) {
+      const flatPath = path.join(profileDir, fileName);
+      if (fs.existsSync(flatPath) && fs.statSync(flatPath).isFile()) {
+        try { fs.unlinkSync(flatPath); fileDeleted = true; } catch (e) {}
+      }
+    }
+
+    // 4. Fallback only if not deleted yet: find and delete lingering file with this name
+    if (!fileDeleted && isAllowedImageFile(fileName)) {
+      const lingering = findAllFilesRecursive(profileDir, fileName);
+      for (const f of lingering) {
+        if (isAllowedImageFile(f)) {
+          try { fs.unlinkSync(f); fileDeleted = true; } catch (e) {}
+        }
+      }
+    }
+  }
+
+  // Delete DB record for ID and any basename alias
+  const res1 = profileDb.deleteHistoryItem(db, trimmed);
+  if (trimmed.includes('/')) {
+    profileDb.deleteHistoryItem(db, path.basename(trimmed));
+    const withoutPng = path.basename(trimmed, '.png');
+    if (withoutPng !== path.basename(trimmed)) {
+      profileDb.deleteHistoryItem(db, withoutPng);
+    }
+  }
+  return res1;
 }
 
 function batchDeleteHistoryItems(profileName, ids) {
   if (!Array.isArray(ids) || ids.length === 0) return true;
   const sanitized = sanitizeProfileName(profileName) || 'Default';
-  const profileDir = getProfileDir(sanitized);
-  const imagesDir = path.join(profileDir, 'images');
+  const profileDir = path.resolve(getProfileDir(sanitized));
+  const db = profileDb.getDb(profileDir, sanitized);
+
+  const urlMap = profileDb.getHistoryUrlsByIds(db, ids);
 
   for (const id of ids) {
-    const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '');
-    const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
-    const imgPath = path.join(imagesDir, fileName);
-    if (fs.existsSync(imgPath)) {
+    if (!id || typeof id !== 'string') continue;
+    const trimmed = id.trim();
+    if (!trimmed) continue;
+
+    let fileDeleted = false;
+
+    // 1. Direct path check if id contains slashes
+    if (trimmed.includes('/')) {
       try {
-        fs.unlinkSync(imgPath);
+        const decodedRel = decodeURIComponent(trimmed).replace(/\\/g, '/');
+        const directTarget = path.resolve(profileDir, decodedRel);
+        if (isPathInside(profileDir, directTarget) && isAllowedImageFile(directTarget) && fs.existsSync(directTarget) && fs.statSync(directTarget).isFile()) {
+          fs.unlinkSync(directTarget);
+          fileDeleted = true;
+        }
+      } catch {}
+    }
+
+    // 2. DB URL resolution
+    const historyUrl = urlMap[trimmed] || urlMap[`${trimmed}.png`] ||
+      (trimmed.endsWith('.png') ? urlMap[trimmed.slice(0, -4)] : null) ||
+      (trimmed.includes('/') ? urlMap[path.basename(trimmed)] : null);
+
+    if (historyUrl) {
+      try {
+        const relFromUrl = decodeURIComponent(historyUrl.replace(/^.*\/api\/images\/[^/]+\//, ''));
+        const targetPath = path.resolve(profileDir, relFromUrl);
+        if (isPathInside(profileDir, targetPath) && isAllowedImageFile(targetPath) && fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+          fs.unlinkSync(targetPath);
+          fileDeleted = true;
+        }
       } catch (e) {}
+    }
+
+    // 3. Legacy and flat locations
+    const cleanId = path.basename(trimmed).replace(/[^a-zA-Z0-9_.-]/g, '');
+    if (cleanId && !/^\.+$/.test(cleanId)) {
+      const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
+
+      if (!fileDeleted && isAllowedImageFile(fileName)) {
+        const legacyPath = path.join(profileDir, 'images', fileName);
+        if (fs.existsSync(legacyPath) && fs.statSync(legacyPath).isFile()) {
+          try { fs.unlinkSync(legacyPath); fileDeleted = true; } catch (e) {}
+        }
+      }
+      if (!fileDeleted && isAllowedImageFile(fileName)) {
+        const flatPath = path.join(profileDir, fileName);
+        if (fs.existsSync(flatPath) && fs.statSync(flatPath).isFile()) {
+          try { fs.unlinkSync(flatPath); fileDeleted = true; } catch (e) {}
+        }
+      }
+
+      // 4. Recursive lingering only if NOT yet deleted
+      if (!fileDeleted && isAllowedImageFile(fileName)) {
+        const lingering = findAllFilesRecursive(profileDir, fileName);
+        for (const f of lingering) {
+          if (isAllowedImageFile(f)) {
+            try { fs.unlinkSync(f); fileDeleted = true; } catch (e) {}
+          }
+        }
+      }
     }
   }
 
-  const db = profileDb.getDb(profileDir, sanitized);
-  return profileDb.batchDeleteHistoryItems(db, ids);
+  // Also collect any base IDs for items with slashes
+  const allDbIds = new Set(ids);
+  for (const id of ids) {
+    if (typeof id === 'string' && id.includes('/')) {
+      allDbIds.add(path.basename(id));
+      allDbIds.add(path.basename(id, '.png'));
+    }
+  }
+
+  return profileDb.batchDeleteHistoryItems(db, Array.from(allDbIds));
 }
 
-function getImagePath(profileName, id) {
+function getImagePath(profileName, subpathOrId) {
+  if (!subpathOrId || typeof subpathOrId !== 'string') return null;
+
   const sanitized = sanitizeProfileName(profileName) || 'Default';
-  const profileDir = getProfileDir(sanitized);
-  const cleanId = String(id).replace(/[^a-zA-Z0-9_.-]/g, '');
-  const fileName = cleanId.endsWith('.png') ? cleanId : `${cleanId}.png`;
-  const imgPath = path.join(profileDir, 'images', fileName);
-  if (fs.existsSync(imgPath)) {
-    return imgPath;
+  const profileDir = path.resolve(getProfileDir(sanitized));
+
+  let decoded;
+  try {
+    decoded = decodeURIComponent(subpathOrId).replace(/\\/g, '/');
+  } catch {
+    return null;
   }
+
+  if (decoded.includes('\0') || decoded.includes('\x00')) return null;
+
+  // 1. Direct candidate inside profileDir (e.g. "2026/11/img123.png" or "img123.png")
+  const directCandidate = path.resolve(profileDir, decoded);
+  if (isPathInside(profileDir, directCandidate)) {
+    if (isAllowedImageFile(directCandidate) && fs.existsSync(directCandidate) && fs.statSync(directCandidate).isFile()) {
+      return directCandidate;
+    }
+    if (!directCandidate.endsWith('.png')) {
+      const withPng = `${directCandidate}.png`;
+      if (isPathInside(profileDir, withPng) && isAllowedImageFile(withPng) && fs.existsSync(withPng) && fs.statSync(withPng).isFile()) {
+        return withPng;
+      }
+    }
+  }
+
+  // 2. Legacy flat candidate inside images/ subdir (e.g. "images/img123.png" or legacy direct id)
+  const legacyDir = path.join(profileDir, 'images');
+  const legacyCandidate = path.resolve(legacyDir, decoded);
+  if (isPathInside(legacyDir, legacyCandidate)) {
+    if (isAllowedImageFile(legacyCandidate) && fs.existsSync(legacyCandidate) && fs.statSync(legacyCandidate).isFile()) {
+      return legacyCandidate;
+    }
+    if (!legacyCandidate.endsWith('.png')) {
+      const withPng = `${legacyCandidate}.png`;
+      if (isPathInside(legacyDir, withPng) && isAllowedImageFile(withPng) && fs.existsSync(withPng) && fs.statSync(withPng).isFile()) {
+        return withPng;
+      }
+    }
+  }
+
+  // 3. Database URL lookup (by id or filename)
+  try {
+    const db = profileDb.getDb(profileDir, sanitized);
+    const historyUrl = profileDb.getHistoryUrlById(db, decoded) || profileDb.getHistoryUrlById(db, path.basename(decoded));
+    if (historyUrl && typeof historyUrl === 'string') {
+      const relFromUrl = decodeURIComponent(historyUrl.replace(/^.*\/api\/images\/[^/]+\//, ''));
+      const dbCandidate = path.resolve(profileDir, relFromUrl);
+      if (isPathInside(profileDir, dbCandidate) && isAllowedImageFile(dbCandidate) && fs.existsSync(dbCandidate) && fs.statSync(dbCandidate).isFile()) {
+        return dbCandidate;
+      }
+    }
+  } catch {}
+
+  // 4. Recursive search fallback for matching file name inside profileDir
+  const cleanBase = path.basename(decoded).replace(/[^a-zA-Z0-9_.-]/g, '');
+  if (cleanBase && !/^\.+$/.test(cleanBase)) {
+    const targetFileName = cleanBase.endsWith('.png') ? cleanBase : `${cleanBase}.png`;
+    if (isAllowedImageFile(targetFileName)) {
+      const found = findFileRecursive(profileDir, targetFileName);
+      if (found && isPathInside(profileDir, found) && isAllowedImageFile(found)) {
+        return found;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -369,6 +680,7 @@ module.exports = {
   switchProfile,
   getProfileData,
   saveProfileData,
+  resolveImageSubdir,
   addHistoryItem,
   getHistory,
   saveGeneratedImageFile,
