@@ -477,7 +477,7 @@ export const useGenerationStore = defineStore('generation', () => {
     params.transparent_bg = false;
   };
 
-  const sendToInpaint = async (imgUrl: string) => {
+  const sendToInpaint = async (imgUrl: string, preserveMask = false) => {
     let base64 = imgUrl;
     if (base64.includes('base64,')) {
       base64 = base64.split('base64,')[1];
@@ -499,7 +499,30 @@ export const useGenerationStore = defineStore('generation', () => {
       }
     }
     params.image = base64;
-    params.mask = undefined;
+    if (!preserveMask) {
+      params.mask = undefined;
+    }
+
+    // 同步检测图片真实尺寸并对齐至 64 整数倍，保证生图参数与涂鸦遮罩基准一致
+    if (base64) {
+      try {
+        const img = new Image();
+        const src = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`;
+        await new Promise<void>((resolve) => {
+          img.onload = () => {
+            const nw = img.naturalWidth || img.width;
+            const nh = img.naturalHeight || img.height;
+            if (nw > 0 && nh > 0) {
+              params.width = Math.max(64, Math.round(nw / 64) * 64);
+              params.height = Math.max(64, Math.round(nh / 64) * 64);
+            }
+            resolve();
+          };
+          img.onerror = () => resolve();
+          img.src = src;
+        });
+      } catch (e) {}
+    }
   };
 
   const useParams = (p: GenerationParams | GeneratedImage | any, keepSeed = false) => {
