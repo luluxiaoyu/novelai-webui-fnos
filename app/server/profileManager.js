@@ -224,26 +224,68 @@ function saveProfileData(profileName, data) {
   const imagesDir = path.join(profileDir, 'images');
   const db = profileDb.getDb(profileDir, sanitized);
 
+  const allowEmptyAll = Boolean(data.allowEmpty);
+
   if (data.params && typeof data.params === 'object') {
     profileDb.saveSetting(db, 'params', data.params);
   }
 
   if (Array.isArray(data.promptHistory)) {
-    profileDb.savePromptHistory(db, data.promptHistory);
+    const existing = profileDb.getAllPromptHistory(db);
+    const allowEmpty = Boolean(data.allowEmptyPromptHistory || allowEmptyAll);
+    if (data.promptHistory.length > 0 || (existing.length > 0 && allowEmpty)) {
+      profileDb.savePromptHistory(db, data.promptHistory);
+    } else if (data.promptHistory.length === 0 && existing.length > 0) {
+      console.warn(`[ProfileManager] Ignored saving empty promptHistory for profile "${sanitized}" because DB contains ${existing.length} items (prevented accidental wipeout).`);
+    } else if (existing.length === 0) {
+      profileDb.savePromptHistory(db, []);
+    }
   }
 
-  if (Array.isArray(data.promptGroups) && data.promptGroups.length > 0) {
-    profileDb.savePromptGroups(db, data.promptGroups);
+  if (Array.isArray(data.promptGroups)) {
+    const existing = profileDb.getAllPromptGroups(db);
+    const allowEmpty = Boolean(data.allowEmptyPromptGroups || allowEmptyAll);
+    if (data.promptGroups.length > 0 || (existing.length > 0 && allowEmpty)) {
+      profileDb.savePromptGroups(db, data.promptGroups);
+    } else if (data.promptGroups.length === 0 && existing.length > 0) {
+      console.warn(`[ProfileManager] Ignored saving empty promptGroups for profile "${sanitized}" because DB contains ${existing.length} items (prevented accidental wipeout).`);
+    } else if (existing.length === 0) {
+      profileDb.savePromptGroups(db, []);
+    }
   } else if (Array.isArray(data.savedPromptGroups)) {
-    profileDb.savePromptGroups(db, data.savedPromptGroups);
+    const existing = profileDb.getAllPromptGroups(db);
+    const allowEmpty = Boolean(data.allowEmptyPromptGroups || allowEmptyAll);
+    if (data.savedPromptGroups.length > 0 || (existing.length > 0 && allowEmpty)) {
+      profileDb.savePromptGroups(db, data.savedPromptGroups);
+    } else if (data.savedPromptGroups.length === 0 && existing.length > 0) {
+      console.warn(`[ProfileManager] Ignored saving empty savedPromptGroups for profile "${sanitized}" because DB contains ${existing.length} items (prevented accidental wipeout).`);
+    } else if (existing.length === 0) {
+      profileDb.savePromptGroups(db, []);
+    }
   }
 
   if (Array.isArray(data.customCharacters)) {
-    profileDb.saveCharacters(db, data.customCharacters);
+    const existing = profileDb.getAllCharacters(db);
+    const allowEmpty = Boolean(data.allowEmptyCharacters || allowEmptyAll);
+    if (data.customCharacters.length > 0 || (existing.length > 0 && allowEmpty)) {
+      profileDb.saveCharacters(db, data.customCharacters);
+    } else if (data.customCharacters.length === 0 && existing.length > 0) {
+      console.warn(`[ProfileManager] Ignored saving empty customCharacters for profile "${sanitized}" because DB contains ${existing.length} items (prevented accidental wipeout).`);
+    } else if (existing.length === 0) {
+      profileDb.saveCharacters(db, []);
+    }
   }
 
   if (Array.isArray(data.customStyles)) {
-    profileDb.saveStyles(db, data.customStyles);
+    const existing = profileDb.getAllStyles(db);
+    const allowEmpty = Boolean(data.allowEmptyStyles || allowEmptyAll);
+    if (data.customStyles.length > 0 || (existing.length > 0 && allowEmpty)) {
+      profileDb.saveStyles(db, data.customStyles);
+    } else if (data.customStyles.length === 0 && existing.length > 0) {
+      console.warn(`[ProfileManager] Ignored saving empty customStyles for profile "${sanitized}" because DB contains ${existing.length} items (prevented accidental wipeout).`);
+    } else if (existing.length === 0) {
+      profileDb.saveStyles(db, []);
+    }
   }
 
   if (Array.isArray(data.history)) {

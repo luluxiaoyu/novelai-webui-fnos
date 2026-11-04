@@ -521,4 +521,65 @@ describe('SQLite Profile Storage & Silent Migration Tests', () => {
     const gLand = data.promptGroups.find(g => g.name === 'Landscape');
     assert.ok(gLand);
   });
+
+  test('15. Accidental empty wipeout prevention for promptHistory, characters, styles and groups (including single-item generation case)', () => {
+    const profile = 'WipeoutSafetyTest';
+    profileManager.createProfile(profile);
+
+    // Initial populate with exactly 1 item each (simulating "生成一次之后")
+    profileManager.saveProfileData(profile, {
+      promptHistory: [
+        { id: 'ph1', prompt: 'prompt 1' }
+      ],
+      customCharacters: [
+        { id: 'c1', name: 'Char 1', prompt: 'c1 prompt' }
+      ],
+      customStyles: [
+        { id: 's1', name: 'Style 1', prompt: 's1 prompt' }
+      ],
+      savedPromptGroups: ['GroupA']
+    });
+
+    let data = profileManager.getProfileData(profile);
+    assert.equal(data.promptHistory.length, 1);
+    assert.equal(data.customCharacters.length, 1);
+    assert.equal(data.customStyles.length, 1);
+    assert.equal(data.savedPromptGroups.length, 1);
+
+    // Simulate accidental frontend save with empty arrays (e.g. uninitialized state during page refresh)
+    profileManager.saveProfileData(profile, {
+      params: { steps: 30 },
+      promptHistory: [],
+      customCharacters: [],
+      customStyles: [],
+      savedPromptGroups: []
+    });
+
+    // Verify existing 1 item was NOT wiped out!
+    data = profileManager.getProfileData(profile);
+    assert.equal(data.promptHistory.length, 1, 'promptHistory must NOT be wiped by empty autosave even when length is 1');
+    assert.equal(data.customCharacters.length, 1, 'customCharacters must NOT be wiped by empty autosave even when length is 1');
+    assert.equal(data.customStyles.length, 1, 'customStyles must NOT be wiped by empty autosave even when length is 1');
+    assert.equal(data.savedPromptGroups.length, 1, 'savedPromptGroups must NOT be wiped by empty array even when length is 1');
+    assert.equal(data.params.steps, 30, 'params must still be updated');
+
+    // Verify explicit deletion WITH allowEmpty flag succeeds
+    profileManager.saveProfileData(profile, {
+      promptHistory: [],
+      allowEmptyPromptHistory: true,
+      customCharacters: [],
+      allowEmptyCharacters: true,
+      customStyles: [],
+      allowEmptyStyles: true,
+      savedPromptGroups: [],
+      allowEmptyPromptGroups: true
+    });
+
+    data = profileManager.getProfileData(profile);
+    assert.equal(data.promptHistory.length, 0, 'promptHistory must be empty when allowEmptyPromptHistory is true');
+    assert.equal(data.customCharacters.length, 0, 'customCharacters must be empty when allowEmptyCharacters is true');
+    assert.equal(data.customStyles.length, 0, 'customStyles must be empty when allowEmptyStyles is true');
+    assert.equal(data.savedPromptGroups.length, 0, 'savedPromptGroups must be empty when allowEmptyPromptGroups is true');
+  });
 });
+

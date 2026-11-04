@@ -40,6 +40,8 @@ export const useProfileStore = defineStore('profile', () => {
       if (res.data && res.data.success) {
         currentProfile.value = targetProfile;
         const genStore = useGenerationStore();
+        genStore.cancelPendingSave();
+        genStore.isProfileDataLoaded = false;
         await genStore.loadProfileData(targetProfile);
       }
     } catch (err: any) {

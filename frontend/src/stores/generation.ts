@@ -178,27 +178,38 @@ export const useGenerationStore = defineStore('generation', () => {
   const batchCurrent = ref(0);
 
   const isLoadingHistory = ref(false);
+  const isProfileDataLoaded = ref(false);
+  let loadProfilePromise: Promise<void> | null = null;
 
-  // 防抖保存活动存档元数据至 NAS
+  // 防抖保存活动存档元数据至 NAS（带合并缓冲队列与显式删除标志）
   let saveTimer: any = null;
-  const saveProfileData = async () => {
+  let pendingSaveData: Record<string, any> = {};
+
+  const saveProfileData = async (partialData?: Record<string, any>) => {
+    if (loadProfilePromise) {
+      await loadProfilePromise;
+    }
+    if (!isProfileDataLoaded.value) {
+      console.warn('[GenStore] saveProfileData skipped: profile data has not finished loading');
+      return;
+    }
     try {
       const current = profileStore.currentProfile || 'Default';
-      const cleanParams = { ...params };
-      delete cleanParams.image;
-      delete cleanParams.mask;
+      let payloadData: Record<string, any>;
+      if (partialData && typeof partialData === 'object' && Object.keys(partialData).length > 0) {
+        payloadData = { ...partialData };
+      } else {
+        const cleanParams = { ...params };
+        delete cleanParams.image;
+        delete cleanParams.mask;
+        payloadData = { params: cleanParams };
+      }
       await encryptedAxios({
         method: 'POST',
         url: '/api/profiles/data',
         data: {
           profile: current,
-          data: {
-            params: cleanParams,
-            promptHistory: promptHistory.value,
-            savedPromptGroups: savedPromptGroups.value,
-            customCharacters: customCharacters.value,
-            customStyles: customStyles.value
-          }
+          data: payloadData
         }
       });
     } catch (err: any) {
@@ -206,12 +217,43 @@ export const useGenerationStore = defineStore('generation', () => {
     }
   };
 
-  const saveProfileDataDebounced = () => {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveProfileData, 600);
+  const flushPendingSave = async () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (!isProfileDataLoaded.value) return;
+    const keys = Object.keys(pendingSaveData);
+    if (keys.length === 0) return;
+    const toSend = { ...pendingSaveData };
+    pendingSaveData = {};
+    await saveProfileData(toSend);
   };
 
-  // 监听核心绘图参数变动，自动同步到活动存档
+  const cancelPendingSave = () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    pendingSaveData = {};
+  };
+
+  const saveProfileDataDebounced = (partialData?: Record<string, any>) => {
+    if (!isProfileDataLoaded.value) return;
+    if (partialData && typeof partialData === 'object') {
+      Object.assign(pendingSaveData, partialData);
+    }
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushPendingSave, 600);
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', () => {
+      flushPendingSave();
+    });
+  }
+
+  // 监听核心绘图参数变动，自动同步到活动存档（仅在数据加载完成后同步 params）
   watch(
     () => [
       params.prompt,
@@ -228,78 +270,87 @@ export const useGenerationStore = defineStore('generation', () => {
       params.uncond_scale
     ],
     () => {
-      saveProfileDataDebounced();
+      if (!isProfileDataLoaded.value) return;
+      const cleanParams = { ...params };
+      delete cleanParams.image;
+      delete cleanParams.mask;
+      saveProfileDataDebounced({ params: cleanParams });
     }
   );
 
-  const saveCustomCharacters = async () => {
-    await saveProfileData();
+  const saveCustomCharacters = async (allowEmpty = false) => {
+    await saveProfileData({ customCharacters: customCharacters.value, allowEmptyCharacters: allowEmpty });
   };
 
-  const saveCustomStyles = async () => {
-    await saveProfileData();
+  const saveCustomStyles = async (allowEmpty = false) => {
+    await saveProfileData({ customStyles: customStyles.value, allowEmptyStyles: allowEmpty });
   };
 
   const toggleCharacterFavorite = async (preset: any) => {
     preset.favorite = !preset.favorite;
-    await saveProfileData();
+    await saveProfileData({ customCharacters: customCharacters.value });
   };
 
   const toggleStyleFavorite = async (preset: any) => {
     preset.favorite = !preset.favorite;
-    await saveProfileData();
+    await saveProfileData({ customStyles: customStyles.value });
   };
 
   // 从 NAS 加载活动存档数据
   const loadProfileData = async (profileName?: string) => {
     const target = profileName || profileStore.currentProfile || 'Default';
-    try {
-      isLoadingHistory.value = true;
-      const res = await encryptedAxios({
-        method: 'GET',
-        url: `/api/profiles/data?profile=${encodeURIComponent(target)}`
-      });
-      if (res.data && res.data.success) {
-        const d = res.data.data || {};
-        promptHistory.value = Array.isArray(d.promptHistory) ? d.promptHistory : [];
-        savedPromptGroups.value = Array.isArray(d.savedPromptGroups) ? d.savedPromptGroups : [];
-        customCharacters.value = Array.isArray(d.customCharacters) ? d.customCharacters.map((c: any) => ({ ...c, category: c.category || '自定义' })) : [];
-        customStyles.value = Array.isArray(d.customStyles) ? d.customStyles : [];
-        if (Array.isArray(d.history)) {
-          history.value = d.history.map((item: any) => ({
-            ...item,
-            url: resolveApiUrl(item.url),
-            isNew: false
-          }));
-          if (history.value.length > 0 && !currentImage.value) {
-            currentImage.value = history.value[0];
+    loadProfilePromise = (async () => {
+      try {
+        isLoadingHistory.value = true;
+        const res = await encryptedAxios({
+          method: 'GET',
+          url: `/api/profiles/data?profile=${encodeURIComponent(target)}`
+        });
+        if (res.data && res.data.success) {
+          const d = res.data.data || {};
+          promptHistory.value = Array.isArray(d.promptHistory) ? d.promptHistory : [];
+          savedPromptGroups.value = Array.isArray(d.savedPromptGroups) ? d.savedPromptGroups : [];
+          customCharacters.value = Array.isArray(d.customCharacters) ? d.customCharacters.map((c: any) => ({ ...c, category: c.category || '自定义' })) : [];
+          customStyles.value = Array.isArray(d.customStyles) ? d.customStyles : [];
+          if (Array.isArray(d.history)) {
+            history.value = d.history.map((item: any) => ({
+              ...item,
+              url: resolveApiUrl(item.url),
+              isNew: false
+            }));
+            if (history.value.length > 0 && !currentImage.value) {
+              currentImage.value = history.value[0];
+            }
           }
-        }
 
-        // 自动恢复上一次的绘图参数与设置
-        if (d.params && typeof d.params === 'object' && Object.keys(d.params).length > 0) {
-          useParams(d.params, true);
-        } else if (history.value.length > 0 && history.value[0]?.params) {
-          useParams(history.value[0].params, false);
+          // 自动恢复上一次的绘图参数与设置
+          if (d.params && typeof d.params === 'object' && Object.keys(d.params).length > 0) {
+            useParams(d.params, true);
+          } else if (history.value.length > 0 && history.value[0]?.params) {
+            useParams(history.value[0].params, false);
+          }
+          isProfileDataLoaded.value = true;
         }
+      } catch (err: any) {
+        console.warn('[GenStore] Failed to load profile data:', err.message);
+      } finally {
+        isLoadingHistory.value = false;
+        loadProfilePromise = null;
       }
-    } catch (err: any) {
-      console.warn('[GenStore] Failed to load profile data:', err.message);
-    } finally {
-      isLoadingHistory.value = false;
-    }
+    })();
+    return loadProfilePromise;
   };
 
   const deletePromptHistory = (id: string) => {
     promptHistory.value = promptHistory.value.filter(p => p.id !== id);
-    saveProfileDataDebounced();
+    saveProfileDataDebounced({ promptHistory: promptHistory.value, allowEmptyPromptHistory: true });
   };
 
   const toggleFavoritePrompt = (id: string) => {
     const item = promptHistory.value.find(p => p.id === id);
     if (item) {
       item.isFavorite = !item.isFavorite;
-      saveProfileDataDebounced();
+      saveProfileDataDebounced({ promptHistory: promptHistory.value });
     }
   };
 
@@ -307,7 +358,7 @@ export const useGenerationStore = defineStore('generation', () => {
     const item = promptHistory.value.find(p => p.id === id);
     if (item) {
       item.note = note;
-      saveProfileDataDebounced();
+      saveProfileDataDebounced({ promptHistory: promptHistory.value });
     }
   };
 
@@ -319,7 +370,7 @@ export const useGenerationStore = defineStore('generation', () => {
       if (trimmed && !savedPromptGroups.value.includes(trimmed)) {
         savedPromptGroups.value.push(trimmed);
       }
-      saveProfileDataDebounced();
+      saveProfileDataDebounced({ promptHistory: promptHistory.value, savedPromptGroups: savedPromptGroups.value });
     }
   };
 
@@ -353,7 +404,10 @@ export const useGenerationStore = defineStore('generation', () => {
       }
     }
 
-    saveProfileDataDebounced();
+    const cleanParams = { ...params };
+    delete cleanParams.image;
+    delete cleanParams.mask;
+    saveProfileDataDebounced({ params: cleanParams });
     if (tabSyncChannel) {
       try {
         tabSyncChannel.postMessage({ type: 'ADD_IMAGE', image: generated });
@@ -375,7 +429,6 @@ export const useGenerationStore = defineStore('generation', () => {
     } catch (err: any) {
       console.warn('[GenStore] Failed to delete image on NAS:', err.message);
     }
-    saveProfileDataDebounced();
     if (tabSyncChannel) {
       try {
         tabSyncChannel.postMessage({ type: 'DELETE_IMAGE', id });
@@ -403,7 +456,6 @@ export const useGenerationStore = defineStore('generation', () => {
     } catch (err: any) {
       console.warn('[GenStore] Failed to delete batch images on NAS:', err.message);
     }
-    saveProfileDataDebounced();
     if (tabSyncChannel) {
       try {
         for (const id of ids) {
@@ -553,6 +605,9 @@ export const useGenerationStore = defineStore('generation', () => {
 
   const generate = async () => {
     if (isGenerating.value) return;
+    if (loadProfilePromise) {
+      await loadProfilePromise;
+    }
     error.value = '';
     isGenerating.value = true;
     startQueuePolling();
@@ -1037,7 +1092,18 @@ export const useGenerationStore = defineStore('generation', () => {
         if (promptHistory.value.length > 300) {
           promptHistory.value = promptHistory.value.slice(0, 300);
         }
-        saveProfileDataDebounced();
+        if (saveTimer) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+        const cleanParams = { ...params };
+        delete cleanParams.image;
+        delete cleanParams.mask;
+        await saveProfileData({
+          params: cleanParams,
+          promptHistory: promptHistory.value,
+          savedPromptGroups: savedPromptGroups.value
+        });
       }
 
       try {
@@ -1203,8 +1269,12 @@ export const useGenerationStore = defineStore('generation', () => {
     removeCharacter,
     clearCharacters,
     isLoadingHistory,
+    isProfileDataLoaded,
     loadProfileData,
     saveProfileData,
+    saveProfileDataDebounced,
+    flushPendingSave,
+    cancelPendingSave,
     saveCustomCharacters,
     saveCustomStyles,
     toggleCharacterFavorite,
