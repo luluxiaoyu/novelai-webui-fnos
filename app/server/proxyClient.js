@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
 const { getConfig } = require('./configManager');
 const { queueManager } = require('./queueManager');
@@ -29,7 +31,138 @@ function cleanNovelAIPayload(body) {
   delete cleaned.profile;
   delete cleaned.originalPrompt;
   delete cleaned.originalParams;
+
+  if (cleaned.parameters && typeof cleaned.parameters === 'object') {
+    cleaned.parameters = { ...cleaned.parameters };
+    if (typeof cleaned.parameters.image === 'string' && cleaned.parameters.image.includes('base64,')) {
+      cleaned.parameters.image = cleaned.parameters.image.split('base64,')[1];
+    }
+    if (typeof cleaned.parameters.mask === 'string' && cleaned.parameters.mask.includes('base64,')) {
+      cleaned.parameters.mask = cleaned.parameters.mask.split('base64,')[1];
+    }
+  }
+
+  if (typeof cleaned.image === 'string' && cleaned.image.includes('base64,')) {
+    cleaned.image = cleaned.image.split('base64,')[1];
+  }
+  if (typeof cleaned.mask === 'string' && cleaned.mask.includes('base64,')) {
+    cleaned.mask = cleaned.mask.split('base64,')[1];
+  }
+
   return cleaned;
+}
+
+async function resolveImageBuffer(image, profile = 'Default') {
+  if (!image) return null;
+
+  if (Buffer.isBuffer(image)) {
+    return image;
+  }
+
+  if (typeof image !== 'string') {
+    return null;
+  }
+
+  const trimmed = image.trim();
+  if (!trimmed) return null;
+
+  // 1. Base64 Data URL (e.g. data:image/png;base64,... or data:...;base64,...)
+  if (trimmed.startsWith('data:') && trimmed.includes('base64,')) {
+    const b64 = trimmed.substring(trimmed.indexOf('base64,') + 7).trim();
+    try {
+      const buf = Buffer.from(b64, 'base64');
+      if (buf && buf.length > 0) return buf;
+    } catch {}
+    return null;
+  }
+
+  // 2. Local API URLs (e.g. /api/images/:profile/:subpath, /app/novelai/api/images/..., or http(s)://host/api/images/...)
+  const apiImagesIdx = trimmed.indexOf('/api/images/');
+  if (apiImagesIdx !== -1) {
+    const afterApi = trimmed.substring(apiImagesIdx + '/api/images/'.length).split('?')[0].split('#')[0];
+    const slashIdx = afterApi.indexOf('/');
+    let targetProfile = profile || 'Default';
+    let subpath = afterApi;
+
+    if (slashIdx !== -1) {
+      try {
+        targetProfile = decodeURIComponent(afterApi.substring(0, slashIdx)) || profile || 'Default';
+      } catch {
+        targetProfile = afterApi.substring(0, slashIdx) || profile || 'Default';
+      }
+      subpath = afterApi.substring(slashIdx + 1);
+    }
+
+    // Try targetProfile first
+    let filePath = profileManager.getImagePath(targetProfile, subpath);
+    if ((!filePath || !fs.existsSync(filePath)) && targetProfile !== profile) {
+      filePath = profileManager.getImagePath(profile, subpath);
+    }
+
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        return fs.readFileSync(filePath);
+      } catch (readErr) {
+        console.warn(`[Proxy] Failed to read image from resolved path "${filePath}":`, readErr.message);
+      }
+    }
+  }
+
+  // 3. Absolute local file path on disk (must exist as a real file)
+  if (trimmed.length < 2048 && path.isAbsolute(trimmed)) {
+    try {
+      if (fs.existsSync(trimmed) && fs.statSync(trimmed).isFile()) {
+        return fs.readFileSync(trimmed);
+      }
+    } catch {}
+  }
+
+  // 4. Relative subpath or image ID resolved via profileManager (only if not a URL)
+  const isUrl = trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/');
+  if (!isUrl && trimmed.length < 2048) {
+    try {
+      const filePath = profileManager.getImagePath(profile || 'Default', trimmed);
+      if (filePath && fs.existsSync(filePath)) {
+        return fs.readFileSync(filePath);
+      }
+    } catch {}
+  }
+
+  // 5. Remote HTTP / HTTPS URL
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const resp = await axios.get(trimmed, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        validateStatus: status => status === 200
+      });
+      return Buffer.from(resp.data);
+    } catch (err) {
+      console.warn(`[Proxy] Failed to fetch remote image URL "${trimmed}":`, err.message);
+    }
+    // Remote fetch failed - do NOT fall through to treating the URL string as raw base64!
+    return null;
+  }
+
+  // If it was a path or URL (e.g. /api/images/... or /foo/bar) and not found on disk,
+  // do NOT fall through to base64 decoding! It is NOT a base64 string!
+  if (trimmed.startsWith('/') || apiImagesIdx !== -1) {
+    return null;
+  }
+
+  // 6. Raw Base64 string
+  const rawBase64 = trimmed.includes(',') ? trimmed.substring(trimmed.indexOf(',') + 1).trim() : trimmed;
+  // A valid raw base64 PNG string must contain only base64 characters and whitespace, and be at least 64 chars long
+  if (/^[A-Za-z0-9+/=\s]+$/.test(rawBase64) && rawBase64.length >= 64) {
+    try {
+      const buf = Buffer.from(rawBase64, 'base64');
+      if (buf && buf.length > 0) {
+        return buf;
+      }
+    } catch {}
+  }
+
+  return null;
 }
 
 function summarizePayload(body) {
@@ -38,14 +171,20 @@ function summarizePayload(body) {
   if (copy.parameters) {
     copy.parameters = { ...copy.parameters };
     if (copy.parameters.image && typeof copy.parameters.image === 'string') {
-      copy.parameters.image = `[base64 len: ${copy.parameters.image.length}]`;
+      copy.parameters.image = copy.parameters.image.length > 128
+        ? `[base64 len: ${copy.parameters.image.length}]`
+        : copy.parameters.image;
     }
     if (copy.parameters.mask && typeof copy.parameters.mask === 'string') {
-      copy.parameters.mask = `[base64 len: ${copy.parameters.mask.length}]`;
+      copy.parameters.mask = copy.parameters.mask.length > 128
+        ? `[base64 len: ${copy.parameters.mask.length}]`
+        : copy.parameters.mask;
     }
   }
   if (copy.image && typeof copy.image === 'string') {
-    copy.image = `[base64 len: ${copy.image.length}]`;
+    copy.image = copy.image.length > 128
+      ? `[base64 len: ${copy.image.length}]`
+      : copy.image;
   }
   return copy;
 }
@@ -303,50 +442,62 @@ async function generateImageStream(req, res) {
 }
 
 async function upscaleImage(req, res) {
-  const token = resolveToken(req);
-  if (!token) {
-    return res.status(401).json({ error: 'Missing NovelAI API token. Please configure it in Settings.' });
-  }
+  try {
+    const token = resolveToken(req);
+    if (!token) {
+      return res.status(401).json({ error: 'Missing NovelAI API token. Please configure it in Settings.' });
+    }
 
-  const { image, width, height, scale, model } = req.body || {};
-  if (!image) {
-    return res.status(400).json({ error: '缺少待超分的图像数据 (image)' });
-  }
+    const { image, width, height, scale, model } = req.body || {};
+    if (!image) {
+      return res.status(400).json({ error: '缺少待超分的图像数据 (image)' });
+    }
 
-  const rawBase64 = typeof image === 'string' && image.includes(',') ? image.split(',')[1] : image;
-  const imageBuffer = Buffer.from(rawBase64, 'base64');
+    const profile = (req.body && req.body.profile) || req.headers['x-profile'] || 'Default';
+    const imageBuffer = await resolveImageBuffer(image, profile);
 
-  let numWidth = Number(width);
-  let numHeight = Number(height);
-  const numScale = Number(scale) || 4;
+    if (!imageBuffer || imageBuffer.length === 0) {
+      return res.status(400).json({ error: '待超分的图像数据为空或无法读取' });
+    }
 
-  if (imageBuffer.length > 24 && imageBuffer[0] === 0x89 && imageBuffer[1] === 0x50 && imageBuffer[2] === 0x4e && imageBuffer[3] === 0x47) {
+    const isPng = imageBuffer.length > 24 &&
+      imageBuffer[0] === 0x89 &&
+      imageBuffer[1] === 0x50 &&
+      imageBuffer[2] === 0x4e &&
+      imageBuffer[3] === 0x47;
+
+    if (!isPng) {
+      return res.status(400).json({ error: '待超分的图像格式无效，NovelAI 仅支持 PNG 格式图像 (image: unknown format)' });
+    }
+
+    let numWidth = Number(width);
+    let numHeight = Number(height);
+    const numScale = Number(scale) === 4 ? 4 : 2;
+
     const pngWidth = imageBuffer.readUInt32BE(16);
     const pngHeight = imageBuffer.readUInt32BE(20);
     if (pngWidth > 0 && pngHeight > 0) {
       numWidth = pngWidth;
       numHeight = pngHeight;
     }
-  }
 
-  if (!numWidth || !numHeight) {
-    return res.status(400).json({ error: '缺少图像分辨率参数 (width, height)' });
-  }
+    if (!numWidth || !numHeight) {
+      return res.status(400).json({ error: '缺少图像分辨率参数 (width, height)' });
+    }
 
-  if (numScale !== 2 && numScale !== 4) {
-    return res.status(400).json({ error: '放大倍率仅支持 2 或 4 (scale: 2 | 4)' });
-  }
+    if (scale !== undefined && scale !== null && Number(scale) !== 2 && Number(scale) !== 4) {
+      return res.status(400).json({ error: '放大倍率仅支持 2 或 4 (scale: 2 | 4)' });
+    }
 
-  if (numWidth * numHeight > 1048576) {
-    const errorMsg = `原图尺寸 (${numWidth}x${numHeight} = ${numWidth * numHeight} 像素) 超出了官方超分限制 (最大 1,048,576 像素，约 1024x1024)`;
-    logGeneration(req, 'upscale', 'failed', { error: errorMsg });
-    return res.status(400).json({ error: errorMsg });
-  }
+    if (numWidth * numHeight > 1048576) {
+      const errorMsg = `原图尺寸 (${numWidth}x${numHeight} = ${numWidth * numHeight} 像素) 超出了官方超分限制 (最大 1,048,576 像素，约 1024x1024)`;
+      logGeneration(req, 'upscale', 'failed', { error: errorMsg });
+      return res.status(400).json({ error: errorMsg });
+    }
 
-  const baseUrl = getBaseUrl();
-  const url = `${baseUrl}/ai/upscale`;
+    const baseUrl = getBaseUrl();
+    const url = `${baseUrl}/ai/upscale`;
 
-  try {
     await queueManager.enqueue(req, res, async () => {
       const targetModel = model || 'nai-diffusion-5-full';
       console.log(`[Proxy] Sending upscale request to upstream (model: ${targetModel}, scale: ${numScale})`);
@@ -414,11 +565,7 @@ async function upscaleImage(req, res) {
 
       // Extract image buffer (from ZIP or raw binary)
       const extractedPng = await extractImageBuffer(rawBuffer);
-      const profile = (req.body && req.body.profile) || req.headers['x-profile'] || 'Default';
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-
-      // Save to NAS disk: profiles/{profile}/images/{id}.png
-      const imageUrl = profileManager.saveGeneratedImageFile(profile, id, extractedPng);
 
       const baseParams = req.body.originalParams ? JSON.parse(JSON.stringify(req.body.originalParams)) : {};
       baseParams.width = numWidth * numScale;
@@ -427,10 +574,34 @@ async function upscaleImage(req, res) {
       if (req.body.originalPrompt) {
         baseParams.prompt = req.body.originalPrompt;
       }
+      baseParams.model = targetModel;
+
+      // Reflect actual dimensions from generated PNG IHDR if available
+      if (extractedPng && extractedPng.length > 24 &&
+          extractedPng[0] === 0x89 &&
+          extractedPng[1] === 0x50 &&
+          extractedPng[2] === 0x4e &&
+          extractedPng[3] === 0x47) {
+        const actualW = extractedPng.readUInt32BE(16);
+        const actualH = extractedPng.readUInt32BE(20);
+        if (actualW > 0 && actualH > 0) {
+          baseParams.width = actualW;
+          baseParams.height = actualH;
+        }
+      }
+
+      // Save to NAS disk: profiles/{profile}/images/{id}.png
+      const imageUrl = profileManager.saveGeneratedImageFile(profile, id, extractedPng, {
+        model: targetModel,
+        params: baseParams
+      });
 
       const generatedItem = {
         id,
         url: imageUrl,
+        prompt: baseParams.prompt || '',
+        negative_prompt: baseParams.negative_prompt || baseParams.uc || '',
+        model: targetModel,
         params: baseParams,
         timestamp: Date.now(),
         isUpscaled: true
@@ -480,6 +651,7 @@ async function upscaleImage(req, res) {
 module.exports = {
   resolveToken,
   cleanNovelAIPayload,
+  resolveImageBuffer,
   forwardRequest,
   generateImage,
   generateImageStream,

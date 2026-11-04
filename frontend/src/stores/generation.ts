@@ -1172,7 +1172,22 @@ export const useGenerationStore = defineStore('generation', () => {
       const modelToUse = options.originalParams?.model || params.model || 'nai-diffusion-5-full';
 
       let rawImage = options.image;
-      if (rawImage.includes('base64,')) {
+      if (rawImage.startsWith('blob:')) {
+        try {
+          const blobRes = await fetch(rawImage);
+          const blobData = await blobRes.blob();
+          rawImage = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const result = (reader.result as string) || '';
+              resolve(result.includes('base64,') ? result.split('base64,')[1] : result);
+            };
+            reader.readAsDataURL(blobData);
+          });
+        } catch (blobErr) {
+          console.warn('[GenStore] Failed to resolve blob URL to base64 for upscale:', blobErr);
+        }
+      } else if (rawImage.includes('base64,')) {
         rawImage = rawImage.split('base64,')[1];
       }
 

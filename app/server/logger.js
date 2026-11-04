@@ -301,7 +301,7 @@ function logGeneration(req, type, status, details) {
       cleanParams.image = `[Base64 Image, len: ${body.image.length}]`;
     }
 
-    const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    const ip = req.ip || (req.headers && req.headers['x-forwarded-for']) || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
     const model = body.model || cleanParams.model || 'N/A';
     const action = body.action || (type === 'upscale' ? 'upscale' : 'generate');
     const prompt = body.input || cleanParams.prompt || cleanParams.v4_prompt?.caption?.base_caption || '';

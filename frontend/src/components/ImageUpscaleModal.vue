@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useAuthStore } from '../stores/auth';
+import { resolveApiUrl } from '../utils/api';
 import { 
   X, Sparkles, UploadCloud, AlertCircle, Check, Loader2, 
   ArrowRight, Image as ImageIcon, Zap, AlertTriangle, RefreshCw
@@ -55,7 +56,17 @@ const loadDataUrlWithDimensions = (dataUrl: string, prompt = '', params: any = n
   originalPrompt.value = prompt;
   originalParams.value = params;
 
+  if (params && params.width && params.height) {
+    const pw = Number(params.width);
+    const ph = Number(params.height);
+    if (pw > 0 && ph > 0) {
+      rawWidth.value = pw;
+      rawHeight.value = ph;
+    }
+  }
+
   const img = new Image();
+  img.crossOrigin = 'anonymous';
   img.onload = () => {
     rawWidth.value = img.naturalWidth || img.width;
     rawHeight.value = img.naturalHeight || img.height;
@@ -63,7 +74,7 @@ const loadDataUrlWithDimensions = (dataUrl: string, prompt = '', params: any = n
   img.onerror = () => {
     errorMessage.value = '解析图片尺寸失败，请确认图片文件完整有效';
   };
-  img.src = dataUrl;
+  img.src = resolveApiUrl(dataUrl);
 };
 
 // 初始化当前图像
@@ -162,6 +173,7 @@ const autoFitToLimit = () => {
 
   try {
     const img = new Image();
+    img.crossOrigin = 'anonymous';
     img.onload = () => {
       const currentPixels = img.naturalWidth * img.naturalHeight;
       // 留一点安全裕量 (乘以 0.99)
@@ -187,7 +199,7 @@ const autoFitToLimit = () => {
       isResizing.value = false;
       errorMessage.value = '缩放图片失败';
     };
-    img.src = activeDataUrl.value;
+    img.src = resolveApiUrl(activeDataUrl.value);
   } catch (err: any) {
     isResizing.value = false;
     errorMessage.value = err.message || '自动缩放失败';
@@ -311,7 +323,7 @@ const handleStartUpscale = async () => {
           <div class="flex items-center gap-3.5 p-3 bg-gray-50/80 dark:bg-gray-950/40 rounded-xl border border-gray-200/80 dark:border-gray-800">
             <!-- 缩略图 -->
             <div class="relative w-20 h-20 sm:w-24 sm:h-24 rounded-lg overflow-hidden bg-gray-200/50 dark:bg-gray-800/50 shrink-0 border border-gray-200 dark:border-gray-700 flex items-center justify-center">
-              <img :src="activeDataUrl" class="w-full h-full object-contain" />
+              <img :src="resolveApiUrl(activeDataUrl)" class="w-full h-full object-contain" />
             </div>
 
             <!-- 分辨率与像素信息卡片 -->

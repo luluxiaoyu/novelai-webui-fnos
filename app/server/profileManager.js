@@ -638,14 +638,33 @@ function batchDeleteHistoryItems(profileName, ids) {
 }
 
 function getImagePath(profileName, subpathOrId) {
-  if (!subpathOrId || typeof subpathOrId !== 'string') return null;
+  if (!subpathOrId || typeof subpathOrId !== 'string' || subpathOrId.length > 2048) return null;
 
-  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  let cleanInput = subpathOrId.split('?')[0].split('#')[0];
+  let sanitized = sanitizeProfileName(profileName) || 'Default';
+
+  const apiImagesIdx = cleanInput.indexOf('/api/images/');
+  if (apiImagesIdx !== -1) {
+    const afterApi = cleanInput.substring(apiImagesIdx + '/api/images/'.length);
+    const slashIdx = afterApi.indexOf('/');
+    if (slashIdx !== -1) {
+      if (!profileName || profileName === 'Default') {
+        try {
+          const urlProfile = decodeURIComponent(afterApi.substring(0, slashIdx));
+          if (urlProfile) sanitized = sanitizeProfileName(urlProfile) || sanitized;
+        } catch {}
+      }
+      cleanInput = afterApi.substring(slashIdx + 1);
+    } else {
+      cleanInput = afterApi;
+    }
+  }
+
   const profileDir = path.resolve(getProfileDir(sanitized));
 
   let decoded;
   try {
-    decoded = decodeURIComponent(subpathOrId).replace(/\\/g, '/');
+    decoded = decodeURIComponent(cleanInput).replace(/\\/g, '/');
   } catch {
     return null;
   }

@@ -22,7 +22,9 @@ class QueueManager {
 
       const cleanup = () => {
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        res.removeListener('close', onClose);
+        if (res && typeof res.removeListener === 'function') {
+          res.removeListener('close', onClose);
+        }
       };
 
       const onClose = () => {
@@ -45,7 +47,9 @@ class QueueManager {
         }, timeoutMs);
       }
 
-      res.once('close', onClose);
+      if (res && typeof res.once === 'function') {
+        res.once('close', onClose);
+      }
 
       const item = {
         id,
