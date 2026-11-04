@@ -1,7 +1,7 @@
 appname=novelai
 version=1.0.0
 display_name=NovelAI WebUI
-desc=一个第三方 NovelAI Web Native 应用。生图历史、tag、角色库、画师库、图库均保存于 NAS 数据目录。填入您的 NovelAI API Token 即可开始使用。
+desc=本应用为<b>免费开源第三方客户端（fnOS 原生应用）</b>，无需额外端口服务（仅限 NAS 内使用，不对外开放）。生图历史、tag、角色库、画师库均<b>自动持久化保存于 NAS</b>，不会上传到任何其他位置。使用时需填入自备的 NovelAI 官方 API Token，相关服务与额度均由 NovelAI 官方计费，与飞牛官方/本软件无关。
 source=thirdparty
 platform=all
 maintainer=luluxiaoyu
