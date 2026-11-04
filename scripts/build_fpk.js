@@ -20,11 +20,16 @@ if (!fs.existsSync(uiDistIndex)) {
   execSync('npm --prefix frontend install && npm --prefix frontend run build', { stdio: 'inherit' });
 }
 
-// 1.2 Ensure server node_modules are installed
-const serverNodeModules = path.join(ROOT_DIR, 'app/server/node_modules');
-if (!fs.existsSync(serverNodeModules)) {
-  console.log('Server dependencies not found. Installing now...');
-  execSync('npm --prefix app/server install --omit=dev', { stdio: 'inherit' });
+// 1.2 Ensure server node_modules are installed and up to date
+const serverPkgPath = path.join(ROOT_DIR, 'app/server/package.json');
+if (fs.existsSync(serverPkgPath)) {
+  const serverPkg = JSON.parse(fs.readFileSync(serverPkgPath, 'utf8'));
+  const requiredDeps = Object.keys(serverPkg.dependencies || {});
+  const missingDeps = requiredDeps.filter(dep => !fs.existsSync(path.join(ROOT_DIR, 'app/server/node_modules', dep)));
+  if (missingDeps.length > 0) {
+    console.log(`Missing server dependencies (${missingDeps.join(', ')}). Installing now...`);
+    execSync('npm --prefix app/server install --omit=dev --cache /tmp/.npm-cache', { stdio: 'inherit' });
+  }
 }
 
 // 2. Read base manifest
