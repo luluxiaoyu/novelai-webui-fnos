@@ -502,4 +502,53 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.ok(!rels.some(r => r.startsWith('#recycle')));
     assert.ok(!rels.some(r => r.startsWith('UnrelatedUserFolder')));
   });
+
+  test('20. getAuthorizedPaths discovers singular share mount directories and marks app_share', () => {
+    const singularShareDir = path.join(TEST_APP_DEST, 'share/NovelAI-WebUI');
+    fs.mkdirSync(singularShareDir, { recursive: true });
+
+    const res = storageManager.getAuthorizedPaths();
+    assert.ok(res.paths && Array.isArray(res.paths));
+    const realSingular = fs.realpathSync(singularShareDir);
+    const item = res.paths.find(p => p.path === realSingular);
+    assert.ok(item, 'Singular share path must be discovered');
+    assert.equal(item.type, 'app_share');
+    assert.match(item.name, /NovelAI-WebUI/);
+  });
+
+  test('21. getAuthorizedPaths preserves custom currentCfg.storagePath in list even if not in standard mounts', () => {
+    const customStorage = path.join(TEST_BASE, 'custom_user_folder');
+    fs.mkdirSync(customStorage, { recursive: true });
+    configManager.updateConfig({ storagePath: customStorage });
+
+    const res = storageManager.getAuthorizedPaths();
+    const realCustom = fs.realpathSync(customStorage);
+    const item = res.paths.find(p => p.path === realCustom);
+    assert.ok(item, 'Custom storage path must be included in authorized paths list');
+    assert.equal(item.isCurrent, true);
+  });
+
+  test('22. getAuthorizedPaths ignores non-directory files inside share directories', () => {
+    const dummyFile = path.join(TEST_APP_DEST, 'share/regular_file.txt');
+    fs.writeFileSync(dummyFile, 'hello text file');
+
+    const res = storageManager.getAuthorizedPaths();
+    assert.ok(res.paths && Array.isArray(res.paths));
+    const found = res.paths.find(p => p.path.endsWith('regular_file.txt'));
+    assert.strictEqual(found, undefined, 'Non-directory file must NOT be included in authorized paths');
+  });
+
+  test('23. getAuthorizedPaths preserves non-existent currentCfg.storagePath with exists: false', () => {
+    const nonExistentPath = path.join(TEST_BASE, 'missing_subfolder/not_created_yet');
+    assert.equal(fs.existsSync(nonExistentPath), false);
+    configManager.updateConfig({ storagePath: nonExistentPath });
+
+    const res = storageManager.getAuthorizedPaths();
+    const resolvedMissing = path.resolve(nonExistentPath);
+    const item = res.paths.find(p => p.path === resolvedMissing);
+    assert.ok(item, 'Non-existent custom storage path must still be included in list');
+    assert.equal(item.exists, false);
+    assert.equal(item.writable, false);
+    assert.equal(item.isCurrent, true);
+  });
 });

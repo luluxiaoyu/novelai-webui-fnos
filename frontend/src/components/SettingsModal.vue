@@ -5,14 +5,14 @@ import { useProfileStore } from '../stores/profile';
 import { useGenerationStore } from '../stores/generation';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
 import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '../utils/mobilePerf';
-import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting, openAppAuthRoute, checkAppAuthCallback } from '../utils/fnosBridge';
+import { isInsideFnOS, isFnosHostBridgeSupported, pickSharedDirectory, openFnOSAppSetting, openAppAuthRoute, checkAppAuthCallback } from '../utils/fnosBridge';
 import CustomSelect from './CustomSelect.vue';
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
   Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree,
   SlidersHorizontal, FolderArchive, RefreshCw, FolderPlus, ExternalLink,
-  GitMerge, ArrowRightLeft, CheckCircle2
+  GitMerge, ArrowRightLeft, CheckCircle2, Copy, HelpCircle
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -152,6 +152,37 @@ const appSettingActionFeedback = ref<{ success: boolean; message: string } | nul
 const showAuthGuideModal = ref(false);
 const authGuideReason = ref<string | null>(null);
 const originalStoragePath = ref('');
+const isBridgeSupported = ref<boolean | null>(null);
+const hasCopiedGuide = ref(false);
+const authGuideText = '飞牛系统权限机制：如需使用其他共享文件夹，请在飞牛系统【应用中心】->【已安装】->【NovelAI WebUI】->【设置】->【访问权限】中添加并设为读写。添加后点击【刷新】即可在下拉列表中选择。';
+
+const handleCopyAuthGuide = async () => {
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(authGuideText);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = authGuideText;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    hasCopiedGuide.value = true;
+    setTimeout(() => {
+      hasCopiedGuide.value = false;
+    }, 2000);
+  } catch (err) {
+    console.warn('[SettingsModal] Failed to copy auth guide:', err);
+  }
+};
+
+const checkBridgeSupport = async () => {
+  isBridgeSupported.value = await isFnosHostBridgeSupported(300);
+};
 
 // Incremental merge state
 const showMergeConfirmModal = ref(false);
@@ -187,14 +218,18 @@ const isKnownPath = computed(() => {
 });
 
 const storagePathOptions = computed(() => {
-  const hasAppShare = authorizedPaths.value.some(p => p.type === 'app_share');
-  const filtered = authorizedPaths.value.filter(p => {
-    // When App Shared Directory is available, hide internal private directory (@appdata) completely
+  const hasAppShare = authorizedPaths.value.some(p => p.type === 'app_share' && p.writable);
+  let filtered = authorizedPaths.value.filter(p => {
+    // When App Shared Directory is available and writable, hide internal private directory (@appdata) completely
     if (hasAppShare && (p.type === 'appdata' || p.path.includes('/var/data') || p.path.includes('@appdata'))) {
       return false;
     }
     return true;
   });
+
+  if (filtered.length === 0) {
+    filtered = authorizedPaths.value;
+  }
 
   const list: Array<{
     value: string;
@@ -365,6 +400,30 @@ const handleOpenAppAuthRoute = async () => {
   }
 };
 
+const handleTestManualPath = async () => {
+  const target = manualPathInput.value.trim();
+  if (!target) return;
+  isValidatingPath.value = true;
+  pathValidationResult.value = null;
+  try {
+    const res = await encryptedAxios({
+      method: 'POST',
+      url: '/api/storage/validate-path',
+      data: { path: target, createIfMissing: true }
+    });
+    if (res.data && res.data.success) {
+      pathValidationResult.value = { success: true, message: '路径有效，读写权限正常 (W_OK 通过)' };
+      await fetchAuthorizedPaths();
+    } else {
+      pathValidationResult.value = { success: false, error: res.data?.error || '无读写权限' };
+    }
+  } catch (err: any) {
+    pathValidationResult.value = { success: false, error: err.response?.data?.error || err.message };
+  } finally {
+    isValidatingPath.value = false;
+  }
+};
+
 const handleApplyManualPath = async () => {
   const target = manualPathInput.value.trim();
   if (!target) return;
@@ -374,11 +433,10 @@ const handleApplyManualPath = async () => {
     const res = await encryptedAxios({
       method: 'POST',
       url: '/api/storage/validate-path',
-      data: { path: target }
+      data: { path: target, createIfMissing: true }
     });
     if (res.data && res.data.success) {
-      isManualMode.value = false;
-      pathValidationResult.value = { success: true, message: '路径有效且具有读写权限' };
+      pathValidationResult.value = { success: true, message: '路径有效，读写权限正常 (W_OK 通过)' };
       await fetchAuthorizedPaths();
       if (originalStoragePath.value && target !== originalStoragePath.value) {
         promptDirectorySwitch(target);
@@ -638,12 +696,15 @@ watch(() => props.modelValue, (val) => {
     tokenTestResult.value = null;
     urlTestResult.value = null;
     saveMessage.value = null;
+    pathValidationResult.value = null;
+    checkBridgeSupport();
     loadSettings();
     profileStore.fetchProfiles();
   }
 });
 
 onMounted(async () => {
+  checkBridgeSupport();
   await loadSettings();
   const authCallback = checkAppAuthCallback();
   if (authCallback.hasCallback && authCallback.status === 'success' && authCallback.path) {
@@ -942,8 +1003,8 @@ const handleDeleteProfile = async (name: string) => {
             </p>
           </div>
 
-          <!-- NAS 本地存储路径与可视化授权 (Scheme A + Scheme B) -->
-          <div class="space-y-2 p-3 sm:p-4 rounded-xl bg-gray-50/70 dark:bg-gray-800/40 border border-gray-200/80 dark:border-gray-700/60">
+          <!-- NAS 本地存储路径与可视化授权 -->
+          <div class="space-y-2.5 p-3 sm:p-4 rounded-xl bg-gray-50/70 dark:bg-gray-800/40 border border-gray-200/80 dark:border-gray-700/60">
             <!-- Header with Title & Action Buttons -->
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
@@ -969,6 +1030,16 @@ const handleDeleteProfile = async (name: string) => {
                 </button>
                 <button
                   type="button"
+                  @click="showAuthGuideModal = true"
+                  class="px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/60 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-700 dark:text-gray-300 font-medium text-xs flex items-center gap-1 transition shadow-sm cursor-pointer"
+                  title="查看飞牛存储目录授权与配置指引"
+                >
+                  <HelpCircle class="w-3.5 h-3.5 text-blue-500" />
+                  <span>授权指引</span>
+                </button>
+                <button
+                  v-if="isBridgeSupported"
+                  type="button"
                   @click="handlePickOrAuthorize"
                   :disabled="isPickingDirectory"
                   class="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/50 border border-blue-200 dark:border-blue-700/50 rounded-lg text-blue-700 dark:text-blue-300 font-medium text-xs flex items-center gap-1 transition shadow-sm cursor-pointer disabled:opacity-50"
@@ -979,6 +1050,7 @@ const handleDeleteProfile = async (name: string) => {
                   <span>{{ isPickingDirectory ? '调起授权中...' : '文件夹授权' }}</span>
                 </button>
                 <button
+                  v-if="isBridgeSupported"
                   type="button"
                   @click="handleOpenAppSetting"
                   :disabled="isOpeningAppSetting"
@@ -993,11 +1065,11 @@ const handleDeleteProfile = async (name: string) => {
                   type="button"
                   @click="isManualMode = !isManualMode"
                   class="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white rounded-lg text-xs font-medium flex items-center gap-1 transition cursor-pointer"
-                  :title="isManualMode ? '切换为预设列表' : '手动指定路径'"
+                  :title="isManualMode ? '切换为预设列表' : '手动输入路径'"
                 >
                   <FolderTree v-if="isManualMode" class="w-3.5 h-3.5" />
                   <Edit3 v-else class="w-3.5 h-3.5" />
-                  <span>{{ isManualMode ? '预设列表' : '自定义' }}</span>
+                  <span>{{ isManualMode ? '选择预设目录' : '手动输入路径' }}</span>
                 </button>
               </div>
             </div>
@@ -1049,22 +1121,36 @@ const handleDeleteProfile = async (name: string) => {
 
             <!-- Mode 2: Manual Path Input Mode -->
             <div v-else class="space-y-2 pt-0.5">
-              <div class="flex gap-2">
+              <div class="flex flex-col sm:flex-row gap-2">
                 <input
                   type="text"
                   v-model="manualPathInput"
                   placeholder="/vol1/shares/NovelAI-WebUI"
                   class="flex-1 min-w-0 px-3.5 py-2.5 bg-white dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors font-mono text-xs sm:text-sm shadow-sm"
                 />
-                <button
-                  type="button"
-                  @click="handleApplyManualPath"
-                  :disabled="isValidatingPath || !manualPathInput.trim()"
-                  class="px-3 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0 text-xs whitespace-nowrap cursor-pointer disabled:opacity-50"
-                >
-                  <Loader2 v-if="isValidatingPath" class="w-3.5 h-3.5 animate-spin" />
-                  <span v-else>验证路径</span>
-                </button>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    @click="handleTestManualPath"
+                    :disabled="isValidatingPath || !manualPathInput.trim()"
+                    class="flex-1 sm:flex-initial px-3 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-medium transition flex items-center justify-center gap-1.5 text-xs whitespace-nowrap cursor-pointer disabled:opacity-50 border border-gray-200 dark:border-gray-700"
+                    title="测试路径是否存在且具备读写权限"
+                  >
+                    <Loader2 v-if="isValidatingPath" class="w-3.5 h-3.5 animate-spin" />
+                    <ShieldCheck v-else class="w-3.5 h-3.5 text-blue-500" />
+                    <span>测试权限</span>
+                  </button>
+                  <button
+                    type="button"
+                    @click="handleApplyManualPath"
+                    :disabled="isValidatingPath || isSwitchingPath || isMerging || !manualPathInput.trim()"
+                    class="flex-1 sm:flex-initial px-3.5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition flex items-center justify-center gap-1.5 text-xs whitespace-nowrap cursor-pointer disabled:opacity-50 shadow-sm"
+                    title="验证并切换至该存储路径"
+                  >
+                    <Loader2 v-if="isSwitchingPath || isMerging" class="w-3.5 h-3.5 animate-spin" />
+                    <span v-else>应用切换</span>
+                  </button>
+                </div>
               </div>
               <p v-if="pathValidationResult" class="text-xs flex items-center gap-1.5" :class="pathValidationResult.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'">
                 <Check v-if="pathValidationResult.success" class="w-3.5 h-3.5 shrink-0" />
@@ -1087,6 +1173,7 @@ const handleDeleteProfile = async (name: string) => {
                   </div>
                   <div class="flex items-center gap-2.5 shrink-0 flex-wrap">
                     <button
+                      v-if="isBridgeSupported"
                       type="button"
                       @click="handlePickOrAuthorize"
                       :disabled="isPickingDirectory"
@@ -1095,6 +1182,7 @@ const handleDeleteProfile = async (name: string) => {
                       {{ isPickingDirectory ? '正在调起...' : '调起授权' }}
                     </button>
                     <button
+                      v-if="isBridgeSupported"
                       type="button"
                       @click="handleOpenAppSetting"
                       :disabled="isOpeningAppSetting"
@@ -1107,7 +1195,7 @@ const handleDeleteProfile = async (name: string) => {
                       @click="showAuthGuideModal = true"
                       class="underline font-medium hover:text-amber-700 dark:hover:text-amber-300 cursor-pointer"
                     >
-                      授权指引
+                      查看授权指引
                     </button>
                   </div>
                 </div>
@@ -1130,8 +1218,31 @@ const handleDeleteProfile = async (name: string) => {
               </div>
             </div>
 
+            <!-- Copyable Guide Card -->
+            <div class="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-900/50 space-y-1.5 text-xs">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-1.5 font-semibold text-blue-900 dark:text-blue-200">
+                  <ShieldCheck class="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <span>飞牛系统权限机制说明</span>
+                </div>
+                <button
+                  type="button"
+                  @click="handleCopyAuthGuide"
+                  class="text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200 font-medium flex items-center gap-1 transition cursor-pointer"
+                  title="复制权限配置指引"
+                >
+                  <Check v-if="hasCopiedGuide" class="w-3 h-3 text-emerald-500" />
+                  <Copy v-else class="w-3 h-3" />
+                  <span>{{ hasCopiedGuide ? '已复制指引' : '复制指引' }}</span>
+                </button>
+              </div>
+              <p class="text-blue-800/90 dark:text-blue-300/90 leading-relaxed text-[11px] sm:text-xs">
+                如需使用其他共享文件夹，请在飞牛系统【应用中心】->【已安装】->【NovelAI WebUI】->【设置】->【访问权限】中添加并设为读写。添加后点击【刷新】即可在下拉列表中选择。
+              </p>
+            </div>
+
             <!-- Path explanation -->
-            <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 leading-relaxed pt-1">
+            <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 leading-relaxed pt-0.5">
               当前配置路径：<code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono text-gray-700 dark:text-gray-300 select-all">{{ storagePath }}</code>。系统存档将存放在此路径的 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-gray-700 dark:text-gray-300">profiles/</code> 文件夹中。
             </p>
           </div>
@@ -1420,7 +1531,7 @@ const handleDeleteProfile = async (name: string) => {
     <!-- 存储目录切换与增量合并确认弹窗 -->
     <div 
       v-if="showMergeConfirmModal && !isMerging" 
-      class="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fade-in"
+      class="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fade-in"
     >
       <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col space-y-4">
         <!-- Title bar -->
@@ -1513,7 +1624,7 @@ const handleDeleteProfile = async (name: string) => {
     <!-- 增量合并实时进度弹窗 -->
     <div 
       v-if="isMerging" 
-      class="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-fade-in"
+      class="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-fade-in"
     >
       <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col space-y-4">
         <!-- Title bar -->
@@ -1590,10 +1701,10 @@ const handleDeleteProfile = async (name: string) => {
       </div>
     </div>
 
-    <!-- 飞牛存储授权向导弹窗 (Scheme B 降级指引) -->
+    <!-- 飞牛存储授权向导弹窗 -->
     <div 
       v-if="showAuthGuideModal" 
-      class="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fade-in"
+      class="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fade-in"
     >
       <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col space-y-4">
         <div class="flex items-center justify-between pb-3 border-b border-gray-200 dark:border-gray-800">
@@ -1629,6 +1740,7 @@ const handleDeleteProfile = async (name: string) => {
               <div class="flex items-center justify-between">
                 <span class="font-semibold text-gray-900 dark:text-gray-100">打开飞牛系统【应用设置】</span>
                 <button
+                  v-if="isBridgeSupported"
                   type="button"
                   @click="handleOpenAppSetting"
                   :disabled="isOpeningAppSetting"
@@ -1659,11 +1771,11 @@ const handleDeleteProfile = async (name: string) => {
                 >
                   <Loader2 v-if="isOpeningAuthRoute" class="w-3 h-3 animate-spin" />
                   <FolderPlus v-else class="w-3 h-3" />
-                  <span>{{ isOpeningAuthRoute ? '打开中...' : '系统授权页面' }}</span>
+                  <span>{{ isOpeningAuthRoute ? '打开中...' : 'Web授权页面' }}</span>
                 </button>
               </div>
               <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
-                切换至【访问权限】选项卡，点击【+ 添加】，勾选需要作为存储的共享文件夹，并将权限设为【读写】。亦可点击上方按钮尝试通过飞牛系统授权路由直达。
+                切换至【访问权限】选项卡，点击【+ 添加】，勾选需要作为存储的共享文件夹，并将权限设为【读写】。亦可点击上方按钮尝试在新页面直接授权。
               </div>
             </div>
           </div>
@@ -1681,16 +1793,28 @@ const handleDeleteProfile = async (name: string) => {
 
         <!-- Action buttons -->
         <div class="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-gray-200 dark:border-gray-800">
-          <button
-            type="button"
-            @click="handleOpenAppSetting"
-            :disabled="isOpeningAppSetting"
-            class="w-full sm:w-auto px-3.5 py-2 text-xs font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-          >
-            <Loader2 v-if="isOpeningAppSetting" class="w-3.5 h-3.5 animate-spin" />
-            <ExternalLink v-else class="w-3.5 h-3.5" />
-            <span>{{ isOpeningAppSetting ? '正在调起系统设置...' : '打开系统应用设置' }}</span>
-          </button>
+          <div class="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              v-if="isBridgeSupported"
+              type="button"
+              @click="handleOpenAppSetting"
+              :disabled="isOpeningAppSetting"
+              class="w-full sm:w-auto px-3.5 py-2 text-xs font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Loader2 v-if="isOpeningAppSetting" class="w-3.5 h-3.5 animate-spin" />
+              <ExternalLink v-else class="w-3.5 h-3.5" />
+              <span>{{ isOpeningAppSetting ? '正在调起系统设置...' : '打开系统应用设置' }}</span>
+            </button>
+            <button
+              type="button"
+              @click="handleCopyAuthGuide"
+              class="px-3 py-2 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition flex items-center gap-1 cursor-pointer"
+            >
+              <Check v-if="hasCopiedGuide" class="w-3.5 h-3.5 text-emerald-500" />
+              <Copy v-else class="w-3.5 h-3.5" />
+              <span>{{ hasCopiedGuide ? '已复制指引' : '复制配置指引' }}</span>
+            </button>
+          </div>
 
           <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
             <button

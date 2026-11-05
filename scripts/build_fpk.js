@@ -15,7 +15,11 @@ execSync(`chmod +x "${path.join(ROOT_DIR, 'cmd')}"/* 2>/dev/null || true`);
 
 // 1.1 Ensure frontend is built
 const uiDistIndex = path.join(ROOT_DIR, 'app/ui/dist/index.html');
-if (!fs.existsSync(uiDistIndex)) {
+const skipFrontend = process.argv.includes('--skip-frontend') || process.env.SKIP_FRONTEND === 'true';
+if (!skipFrontend) {
+  console.log('Compiling frontend dist now...');
+  execSync('npm --prefix frontend run build', { stdio: 'inherit' });
+} else if (!fs.existsSync(uiDistIndex)) {
   console.log('Frontend dist not found. Compiling frontend now...');
   execSync('npm --prefix frontend install && npm --prefix frontend run build', { stdio: 'inherit' });
 }

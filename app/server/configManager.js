@@ -1,36 +1,66 @@
 const fs = require('fs');
 const path = require('path');
 
-const APP_DEST = process.env.TRIM_APPDEST || path.resolve(__dirname, '../..');
-const PKG_VAR = process.env.TRIM_PKGVAR || path.join(APP_DEST, 'var');
+const APP_DEST = process.env.TRIM_APPDEST ? path.resolve(process.env.TRIM_APPDEST) : path.resolve(__dirname, '../..');
+const PKG_VAR = process.env.TRIM_PKGVAR ? path.resolve(process.env.TRIM_PKGVAR) : path.join(APP_DEST, 'var');
 
 // Detect fnOS user-facing shared directory (挂载到飞牛"文件管理"的共享文件夹)
 function getDetectedShareDir() {
   if (process.env.NOVELAI_SHARE_DIR && fs.existsSync(process.env.NOVELAI_SHARE_DIR)) {
     return process.env.NOVELAI_SHARE_DIR;
   }
-  if (process.env.TRIM_DATA_SHARE_PATHS && fs.existsSync(process.env.TRIM_DATA_SHARE_PATHS)) {
-    return process.env.TRIM_DATA_SHARE_PATHS;
+  if (process.env.TRIM_DATA_SHARE_PATHS) {
+    const raw = process.env.TRIM_DATA_SHARE_PATHS.trim();
+    if (fs.existsSync(raw)) {
+      return raw;
+    }
+    const parts = raw.split(/[:;,\n\r]/).map(s => s.trim()).filter(Boolean);
+    const existing = parts.find(p => fs.existsSync(p));
+    if (existing) return existing;
   }
+  // Singular /var/apps/novelai/share (official fnOS app share mount)
+  if (fs.existsSync('/var/apps/novelai/share/NovelAI-WebUI')) {
+    return '/var/apps/novelai/share/NovelAI-WebUI';
+  }
+  // Plural /var/apps/novelai/shares
   if (fs.existsSync('/var/apps/novelai/shares/NovelAI-WebUI')) {
     return '/var/apps/novelai/shares/NovelAI-WebUI';
   }
-  const appDestShareWebUI = path.join(APP_DEST, 'shares/NovelAI-WebUI');
+  const appDestShareWebUI = path.join(APP_DEST, 'share/NovelAI-WebUI');
   if (fs.existsSync(appDestShareWebUI)) {
     return appDestShareWebUI;
   }
-  for (let vol = 1; vol <= 5; vol++) {
-    const volPath = `/vol${vol}/@appshare/NovelAI-WebUI`;
-    if (fs.existsSync(volPath)) {
-      return volPath;
+  const appDestSharesWebUI = path.join(APP_DEST, 'shares/NovelAI-WebUI');
+  if (fs.existsSync(appDestSharesWebUI)) {
+    return appDestSharesWebUI;
+  }
+  for (let vol = 1; vol <= 9; vol++) {
+    const volAppShare = `/vol${vol}/@appshare/NovelAI-WebUI`;
+    if (fs.existsSync(volAppShare)) {
+      return volAppShare;
     }
+    const volShare = `/vol${vol}/shares/NovelAI-WebUI`;
+    if (fs.existsSync(volShare)) {
+      return volShare;
+    }
+    const volShareSingular = `/vol${vol}/share/NovelAI-WebUI`;
+    if (fs.existsSync(volShareSingular)) {
+      return volShareSingular;
+    }
+  }
+  if (fs.existsSync('/var/apps/novelai/share/NovelAI')) {
+    return '/var/apps/novelai/share/NovelAI';
   }
   if (fs.existsSync('/var/apps/novelai/shares/NovelAI')) {
     return '/var/apps/novelai/shares/NovelAI';
   }
-  const appDestShare = path.join(APP_DEST, 'shares/NovelAI');
+  const appDestShare = path.join(APP_DEST, 'share/NovelAI');
   if (fs.existsSync(appDestShare)) {
     return appDestShare;
+  }
+  const appDestShares = path.join(APP_DEST, 'shares/NovelAI');
+  if (fs.existsSync(appDestShares)) {
+    return appDestShares;
   }
   return null;
 }

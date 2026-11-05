@@ -29,12 +29,61 @@ export interface FnosAppAuthCallbackResult {
 }
 
 let trimAppInstance: TrimApp | null = null;
+let hostBridgeSupported: boolean | null = null;
+let probePromise: Promise<boolean> | null = null;
 
 export function getTrimApp(): TrimApp {
   if (!trimAppInstance) {
-    trimAppInstance = new TrimApp({ debug: true });
+    trimAppInstance = new TrimApp({ debug: false });
   }
   return trimAppInstance;
+}
+
+/**
+ * Proactively check if the host window supports @trimjs/web-app Postmate / Extension host handshake.
+ * Bounded by a quick timeout (300ms). If unsupported or timeout occurs, marks host bridge as unsupported.
+ */
+export async function isFnosHostBridgeSupported(timeoutMs = 300): Promise<boolean> {
+  if (hostBridgeSupported !== null) {
+    return hostBridgeSupported;
+  }
+  if (typeof window === 'undefined') {
+    hostBridgeSupported = false;
+    return false;
+  }
+  try {
+    if (window.parent === window) {
+      hostBridgeSupported = false;
+      return false;
+    }
+  } catch {
+    hostBridgeSupported = false;
+    return false;
+  }
+
+  if (probePromise) {
+    return probePromise;
+  }
+
+  probePromise = (async () => {
+    try {
+      const app = getTrimApp();
+      let timer: any;
+      const timeoutP = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Extension host handshake timeout')), timeoutMs);
+      });
+      await Promise.race([app.ready(), timeoutP]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+      hostBridgeSupported = true;
+      return true;
+    } catch {
+      hostBridgeSupported = false;
+      return false;
+    }
+  })();
+
+  return probePromise;
 }
 
 /**
@@ -66,11 +115,9 @@ function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMs
 
 /**
  * Invoke native fnOS shared directory picker using the official @trimjs/web-app SDK.
- * Bounded by a timeout to prevent hanging when host does not respond to Postmate.
+ * Bounded by a quick handshake check to prevent hanging when host does not respond to Postmate.
  */
-export async function pickSharedDirectory(timeoutMs = 2000): Promise<FnosPickResult> {
-  const app = getTrimApp();
-
+export async function pickSharedDirectory(timeoutMs = 1500): Promise<FnosPickResult> {
   if (!isInsideFnOS()) {
     return {
       supported: false,
@@ -78,6 +125,17 @@ export async function pickSharedDirectory(timeoutMs = 2000): Promise<FnosPickRes
       error: '当前未运行在飞牛桌面宿主环境中'
     };
   }
+
+  const supported = await isFnosHostBridgeSupported(300);
+  if (!supported) {
+    return {
+      supported: false,
+      success: false,
+      error: '宿主桌面未开放交互式文件夹选择器（请使用预设列表或手动输入路径）'
+    };
+  }
+
+  const app = getTrimApp();
 
   try {
     // 1. Try pickSharedFile first (Application Shared Folder authorization) with bounded timeout
@@ -187,11 +245,19 @@ export async function openAppAuthRoute(
  * Open the host fnOS App Settings window for NovelAI WebUI directly.
  * Bounded by timeout and accompanied by postMessage fallbacks.
  */
-export async function openFnOSAppSetting(timeoutMs = 1800): Promise<FnosAppSettingResult> {
+export async function openFnOSAppSetting(timeoutMs = 1500): Promise<FnosAppSettingResult> {
   if (!isInsideFnOS()) {
     return {
       success: false,
       error: '当前在独立浏览器窗口运行，宿主设置通道不可用'
+    };
+  }
+
+  const supported = await isFnosHostBridgeSupported(300);
+  if (!supported) {
+    return {
+      success: false,
+      error: '宿主系统未开放应用设置通信接口，请在飞牛系统【应用中心】->【已安装】->【NovelAI WebUI】->【设置】中配置'
     };
   }
 

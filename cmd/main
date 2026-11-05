@@ -29,16 +29,50 @@ TRIM_APPDEST="${TRIM_APPDEST:-.}"
 
 # Detect fnOS data-share mount directory (for fnOS 文件管理)
 SHARE_DIR=""
-if [ -n "$TRIM_DATA_SHARE_PATHS" ] && [ -d "$TRIM_DATA_SHARE_PATHS" ]; then
-    SHARE_DIR="$TRIM_DATA_SHARE_PATHS"
-elif [ -d "${TRIM_APPDEST}/shares/NovelAI-WebUI" ]; then
-    SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI-WebUI"
-elif [ -d "/var/apps/novelai/shares/NovelAI-WebUI" ]; then
-    SHARE_DIR="/var/apps/novelai/shares/NovelAI-WebUI"
-elif [ -d "${TRIM_APPDEST}/shares/NovelAI" ]; then
-    SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI"
-elif [ -d "/var/apps/novelai/shares/NovelAI" ]; then
-    SHARE_DIR="/var/apps/novelai/shares/NovelAI"
+if [ -n "$TRIM_DATA_SHARE_PATHS" ]; then
+    IFS=':;,' read -ra CANDIDATE_PATHS <<< "$TRIM_DATA_SHARE_PATHS"
+    for candidate in "${CANDIDATE_PATHS[@]}"; do
+        clean_c="$(echo "$candidate" | xargs)"
+        if [ -n "$clean_c" ] && [ -d "$clean_c" ]; then
+            SHARE_DIR="$clean_c"
+            break
+        fi
+    done
+fi
+
+if [ -z "$SHARE_DIR" ]; then
+    if [ -d "${TRIM_APPDEST}/share/NovelAI-WebUI" ]; then
+        SHARE_DIR="${TRIM_APPDEST}/share/NovelAI-WebUI"
+    elif [ -d "/var/apps/novelai/share/NovelAI-WebUI" ]; then
+        SHARE_DIR="/var/apps/novelai/share/NovelAI-WebUI"
+    elif [ -d "${TRIM_APPDEST}/shares/NovelAI-WebUI" ]; then
+        SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI-WebUI"
+    elif [ -d "/var/apps/novelai/shares/NovelAI-WebUI" ]; then
+        SHARE_DIR="/var/apps/novelai/shares/NovelAI-WebUI"
+    elif [ -d "${TRIM_APPDEST}/share/NovelAI" ]; then
+        SHARE_DIR="${TRIM_APPDEST}/share/NovelAI"
+    elif [ -d "/var/apps/novelai/share/NovelAI" ]; then
+        SHARE_DIR="/var/apps/novelai/share/NovelAI"
+    elif [ -d "${TRIM_APPDEST}/shares/NovelAI" ]; then
+        SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI"
+    elif [ -d "/var/apps/novelai/shares/NovelAI" ]; then
+        SHARE_DIR="/var/apps/novelai/shares/NovelAI"
+    fi
+fi
+
+if [ -z "$SHARE_DIR" ]; then
+    for vol in 1 2 3 4 5 6 7 8 9; do
+        if [ -d "/vol${vol}/@appshare/NovelAI-WebUI" ]; then
+            SHARE_DIR="/vol${vol}/@appshare/NovelAI-WebUI"
+            break
+        elif [ -d "/vol${vol}/shares/NovelAI-WebUI" ]; then
+            SHARE_DIR="/vol${vol}/shares/NovelAI-WebUI"
+            break
+        elif [ -d "/vol${vol}/share/NovelAI-WebUI" ]; then
+            SHARE_DIR="/vol${vol}/share/NovelAI-WebUI"
+            break
+        fi
+    done
 fi
 
 if [ -z "$SHARE_DIR" ]; then

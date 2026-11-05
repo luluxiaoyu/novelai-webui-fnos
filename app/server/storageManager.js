@@ -84,32 +84,77 @@ function getAuthorizedPaths() {
 
   const candidates = [];
 
-  // 1. TRIM_DATA_SHARE_PATHS env var (may contain colon/semicolon/comma/newline separated paths or single path with spaces)
-  if (process.env.TRIM_DATA_SHARE_PATHS) {
-    const envVal = process.env.TRIM_DATA_SHARE_PATHS.trim();
-    if (fs.existsSync(envVal)) {
-      candidates.push({ rawPath: envVal, source: 'env_share', shareName: path.basename(envVal) });
-    } else {
-      const envParts = envVal.split(/[:;,\n]/).map(s => s.trim()).filter(Boolean);
-      for (const p of envParts) {
-        candidates.push({ rawPath: p, source: 'env_share', shareName: path.basename(p) });
+  // 1. Current configured storagePath MUST be included even if not created on disk yet
+  if (currentCfg.storagePath) {
+    const curPath = path.resolve(currentCfg.storagePath);
+    candidates.push({ rawPath: curPath, source: 'current_config', shareName: path.basename(curPath) });
+  }
+
+  // Helper to parse multi-path strings (JSON array or delimiter separated)
+  const parsePathList = (val) => {
+    if (!val || typeof val !== 'string') return [];
+    const trimmed = val.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const arr = JSON.parse(trimmed);
+        if (Array.isArray(arr)) {
+          return arr.map(s => String(s).trim()).filter(Boolean);
+        }
+      } catch {}
+    }
+    // If it exists as a single intact directory path (even with spaces or unusual characters), prefer that
+    if (fs.existsSync(trimmed)) {
+      return [trimmed];
+    }
+    // Otherwise split on colon, semicolon, comma, or newlines
+    return trimmed.split(/[:;,\n\r]/).map(s => s.trim()).filter(Boolean);
+  };
+
+  // 2. Scan environment variables
+  const envVars = [
+    process.env.TRIM_DATA_SHARE_PATHS,
+    process.env.TRIM_SHARE_PATHS,
+    process.env.TRIM_SHARE_DIR,
+    process.env.TRIM_APP_SHARE,
+    process.env.NOVELAI_SHARE_DIR
+  ];
+
+  for (const envVal of envVars) {
+    const parsedPaths = parsePathList(envVal);
+    for (const p of parsedPaths) {
+      if (fs.existsSync(p)) {
+        try {
+          if (fs.statSync(p).isDirectory()) {
+            candidates.push({ rawPath: p, source: 'env_share', shareName: path.basename(p) });
+            // If the path itself is a shares container directory, also scan its child directories
+            const children = fs.readdirSync(p, { withFileTypes: true });
+            for (const child of children) {
+              if (child.name.startsWith('.')) continue;
+              const childPath = path.join(p, child.name);
+              try {
+                if (fs.statSync(childPath).isDirectory()) {
+                  candidates.push({ rawPath: childPath, source: 'env_share_entry', shareName: child.name });
+                }
+              } catch {}
+            }
+          }
+        } catch {}
       }
     }
   }
 
-  // 2. NOVELAI_SHARE_DIR env var
-  if (process.env.NOVELAI_SHARE_DIR) {
-    candidates.push({
-      rawPath: process.env.NOVELAI_SHARE_DIR,
-      source: 'env_novelai',
-      shareName: path.basename(process.env.NOVELAI_SHARE_DIR)
-    });
-  }
-
-  // 3. Mount shares directories: /var/apps/novelai/shares and ${TRIM_APPDEST}/shares
+  // 3. Mount shares directories:
+  // Both singular ('share') and plural ('shares') under /var/apps/novelai, APP_DEST, and PKG_VAR
   const sharesDirs = [
+    '/var/apps/novelai/share',
     '/var/apps/novelai/shares',
-    path.join(APP_DEST, 'shares')
+    '/var/apps/novelai-webui/share',
+    '/var/apps/novelai-webui/shares',
+    path.join(APP_DEST, 'share'),
+    path.join(APP_DEST, 'shares'),
+    path.join(PKG_VAR, 'share'),
+    path.join(PKG_VAR, 'shares')
   ];
 
   for (const sharesDir of sharesDirs) {
@@ -119,7 +164,14 @@ function getAuthorizedPaths() {
         for (const entry of entries) {
           if (entry.name.startsWith('.')) continue;
           const fullPath = path.join(sharesDir, entry.name);
-          candidates.push({ rawPath: fullPath, source: 'shares_dir', shareName: entry.name });
+          try {
+            if (fs.statSync(fullPath).isDirectory()) {
+              candidates.push({ rawPath: fullPath, source: 'shares_dir', shareName: entry.name });
+            }
+          } catch {}
+        }
+        if (sharesDir.endsWith('NovelAI-WebUI') || sharesDir.endsWith('NovelAI')) {
+          candidates.push({ rawPath: sharesDir, source: 'app_share_dir', shareName: path.basename(sharesDir) });
         }
       }
     } catch (err) {
@@ -127,26 +179,66 @@ function getAuthorizedPaths() {
     }
   }
 
-  // Direct check for /vol*/@appshare/NovelAI-WebUI if mounted
-  for (let vol = 1; vol <= 5; vol++) {
-    const volPath = `/vol${vol}/@appshare/NovelAI-WebUI`;
-    if (fs.existsSync(volPath)) {
-      candidates.push({ rawPath: volPath, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
+  // 4. Specific NovelAI app share checks
+  const specificShares = [
+    '/var/apps/novelai/share/NovelAI-WebUI',
+    '/var/apps/novelai/shares/NovelAI-WebUI',
+    '/var/apps/novelai-webui/share/NovelAI-WebUI',
+    '/var/apps/novelai-webui/shares/NovelAI-WebUI',
+    path.join(APP_DEST, 'share/NovelAI-WebUI'),
+    path.join(APP_DEST, 'shares/NovelAI-WebUI'),
+    path.join(PKG_VAR, 'share/NovelAI-WebUI'),
+    path.join(PKG_VAR, 'shares/NovelAI-WebUI'),
+    '/var/apps/novelai/share/NovelAI',
+    '/var/apps/novelai/shares/NovelAI',
+    path.join(APP_DEST, 'share/NovelAI'),
+    path.join(APP_DEST, 'shares/NovelAI')
+  ];
+  for (const sp of specificShares) {
+    try {
+      if (fs.existsSync(sp) && fs.statSync(sp).isDirectory()) {
+        candidates.push({ rawPath: sp, source: 'app_share_specific', shareName: path.basename(sp) });
+      }
+    } catch {}
+  }
+
+  // 5. Volume mounts across /vol1 through /vol9
+  for (let vol = 1; vol <= 9; vol++) {
+    const volAppShare = `/vol${vol}/@appshare/NovelAI-WebUI`;
+    if (fs.existsSync(volAppShare)) {
+      candidates.push({ rawPath: volAppShare, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
+    }
+    const volShareNovelAI = `/vol${vol}/shares/NovelAI-WebUI`;
+    if (fs.existsSync(volShareNovelAI)) {
+      candidates.push({ rawPath: volShareNovelAI, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
+    }
+    const volShareSingular = `/vol${vol}/share/NovelAI-WebUI`;
+    if (fs.existsSync(volShareSingular)) {
+      candidates.push({ rawPath: volShareSingular, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
+    }
+    // Scan containers: shares, share, @appshare, @share
+    for (const sub of ['shares', 'share', '@appshare', '@share']) {
+      const parentDir = `/vol${vol}/${sub}`;
+      try {
+        if (fs.existsSync(parentDir) && fs.statSync(parentDir).isDirectory()) {
+          const entries = fs.readdirSync(parentDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.name.startsWith('.')) continue;
+            const fullPath = path.join(parentDir, entry.name);
+            try {
+              if (fs.statSync(fullPath).isDirectory()) {
+                candidates.push({ rawPath: fullPath, source: sub === '@appshare' ? 'vol_appshare' : 'vol_share', shareName: entry.name });
+              }
+            } catch {}
+          }
+        }
+      } catch {}
     }
   }
 
-  // 4. Default package var data dir (${TRIM_PKGVAR}/data)
-  // When App Shared Directory is available, strictly do NOT include defaultVarData (@appdata/novelai/data)
-  const hasAppShare = candidates.some(c => 
-    c.shareName === 'NovelAI-WebUI' || 
-    c.shareName === 'NovelAI' ||
-    (c.rawPath && (c.rawPath.includes('NovelAI-WebUI') || c.rawPath.includes('@appshare/NovelAI-WebUI')))
-  );
+  // 6. Default package var data dir (${TRIM_PKGVAR}/data)
   const defaultVarData = path.join(PKG_VAR, 'data');
-
-  if (!hasAppShare) {
-    candidates.push({ rawPath: defaultVarData, source: 'default_data', shareName: 'data' });
-  }
+  candidates.push({ rawPath: defaultVarData, source: 'default_data', shareName: 'data' });
 
   // Deduplicate entries by canonical real path
   const seenRealPaths = new Set();
@@ -167,6 +259,13 @@ function getAuthorizedPaths() {
     }
     seenRealPaths.add(key);
 
+    // If path exists on disk, ensure it is a directory (skip non-directory files)
+    try {
+      if (fs.existsSync(realPath) && !fs.statSync(realPath).isDirectory()) {
+        continue;
+      }
+    } catch {}
+
     const writeCheck = testPathWritable(realPath);
 
     // Format friendly display name & category (strictly no emojis, professional terminology)
@@ -174,23 +273,33 @@ function getAuthorizedPaths() {
     let itemType = 'custom';
     const baseName = item.shareName || path.basename(realPath);
 
-    if (baseName === 'NovelAI-WebUI' || baseName === 'NovelAI' || realPath.endsWith('/shares/NovelAI-WebUI') || realPath.includes('@appshare/NovelAI-WebUI')) {
+    if (
+      baseName === 'NovelAI-WebUI' || 
+      baseName === 'NovelAI' || 
+      realPath.endsWith('/share/NovelAI-WebUI') || 
+      realPath.endsWith('/shares/NovelAI-WebUI') || 
+      realPath.includes('@appshare/NovelAI-WebUI') ||
+      realPath.includes('/shares/NovelAI-WebUI') ||
+      realPath.includes('/share/NovelAI-WebUI')
+    ) {
       friendlyName = '应用文件/NovelAI-WebUI (默认)';
       itemType = 'app_share';
     } else if (item.source === 'default_data' || realPath.includes('/var/data') || realPath.includes('@appdata') || realPath.endsWith('/var/data')) {
       friendlyName = `应用私有目录: ${baseName}`;
       itemType = 'appdata';
-    } else if (item.source === 'shares_dir' || item.source === 'env_share' || realPath.includes('/shares/')) {
+    } else if (
+      item.source === 'shares_dir' || 
+      item.source === 'vol_share' || 
+      item.source === 'env_share' || 
+      item.source === 'env_share_entry' ||
+      realPath.includes('/shares/') || 
+      realPath.includes('/share/')
+    ) {
       friendlyName = `共享文件夹: ${baseName}`;
       itemType = 'share';
     } else {
       friendlyName = `自定义路径: ${baseName}`;
       itemType = 'custom';
-    }
-
-    // Hide internal private directory (@appdata) completely if app share is available
-    if (hasAppShare && (itemType === 'appdata' || realPath.includes('/var/data') || realPath.includes('@appdata'))) {
-      continue;
     }
 
     const isCurrent = currentResolved ? (currentResolved === realPath || currentResolved === resolvedPath) : false;
@@ -205,6 +314,16 @@ function getAuthorizedPaths() {
       reason: writeCheck.reason,
       isCurrent: !!isCurrent
     });
+  }
+
+  // When App Shared Directory is available and exists, hide internal private directory (@appdata)
+  // Safety guarantee: only filter if there are other valid paths so results is never empty
+  const hasAppShare = results.some(r => r.type === 'app_share' && r.exists);
+  if (hasAppShare && results.length > 1) {
+    const nonAppData = results.filter(r => !(r.type === 'appdata' || r.path.includes('/var/data') || r.path.includes('@appdata')));
+    if (nonAppData.length > 0) {
+      results = nonAppData;
+    }
   }
 
   // When App Shared Directory is available and current storagePath points to internal var/data, switch default to app_share
@@ -247,7 +366,9 @@ function validatePath(targetPath, createIfMissing = false) {
   if (createIfMissing && !fs.existsSync(cleanPath)) {
     try {
       fs.mkdirSync(cleanPath, { recursive: true });
-    } catch {}
+    } catch (err) {
+      return { exists: false, writable: false, reason: `创建目录失败: ${err.message}` };
+    }
   }
   return testPathWritable(cleanPath);
 }
