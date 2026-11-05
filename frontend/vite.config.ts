@@ -34,6 +34,9 @@ export default defineConfig({
   build: {
     outDir: '../app/ui/dist',
     emptyOutDir: true,
+    rolldownOptions: {
+      input: { main: path.resolve(import.meta.dirname, 'index.html'), authCallback: path.resolve(import.meta.dirname, 'auth-callback.html') },
+    },
     chunkSizeWarningLimit: 3000
   },
   server: {

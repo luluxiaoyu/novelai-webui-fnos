@@ -27,71 +27,11 @@ fi
 TRIM_PKGVAR="${TRIM_PKGVAR:-./var}"
 TRIM_APPDEST="${TRIM_APPDEST:-.}"
 
-# Detect fnOS data-share mount directory (for fnOS 文件管理)
-SHARE_DIR=""
-if [ -n "$TRIM_DATA_SHARE_PATHS" ]; then
-    IFS=':;,' read -ra CANDIDATE_PATHS <<< "$TRIM_DATA_SHARE_PATHS"
-    for candidate in "${CANDIDATE_PATHS[@]}"; do
-        clean_c="$(echo "$candidate" | xargs)"
-        if [ -n "$clean_c" ] && [ -d "$clean_c" ]; then
-            SHARE_DIR="$clean_c"
-            break
-        fi
-    done
-fi
-
-if [ -z "$SHARE_DIR" ]; then
-    if [ -d "${TRIM_APPDEST}/share/NovelAI-WebUI" ]; then
-        SHARE_DIR="${TRIM_APPDEST}/share/NovelAI-WebUI"
-    elif [ -d "/var/apps/novelai/share/NovelAI-WebUI" ]; then
-        SHARE_DIR="/var/apps/novelai/share/NovelAI-WebUI"
-    elif [ -d "${TRIM_APPDEST}/shares/NovelAI-WebUI" ]; then
-        SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI-WebUI"
-    elif [ -d "/var/apps/novelai/shares/NovelAI-WebUI" ]; then
-        SHARE_DIR="/var/apps/novelai/shares/NovelAI-WebUI"
-    elif [ -d "${TRIM_APPDEST}/share/NovelAI" ]; then
-        SHARE_DIR="${TRIM_APPDEST}/share/NovelAI"
-    elif [ -d "/var/apps/novelai/share/NovelAI" ]; then
-        SHARE_DIR="/var/apps/novelai/share/NovelAI"
-    elif [ -d "${TRIM_APPDEST}/shares/NovelAI" ]; then
-        SHARE_DIR="${TRIM_APPDEST}/shares/NovelAI"
-    elif [ -d "/var/apps/novelai/shares/NovelAI" ]; then
-        SHARE_DIR="/var/apps/novelai/shares/NovelAI"
-    fi
-fi
-
-if [ -z "$SHARE_DIR" ]; then
-    for vol in 1 2 3 4 5 6 7 8 9; do
-        if [ -d "/vol${vol}/@appshare/NovelAI-WebUI" ]; then
-            SHARE_DIR="/vol${vol}/@appshare/NovelAI-WebUI"
-            break
-        elif [ -d "/vol${vol}/shares/NovelAI-WebUI" ]; then
-            SHARE_DIR="/vol${vol}/shares/NovelAI-WebUI"
-            break
-        elif [ -d "/vol${vol}/share/NovelAI-WebUI" ]; then
-            SHARE_DIR="/vol${vol}/share/NovelAI-WebUI"
-            break
-        fi
-    done
-fi
-
-if [ -z "$SHARE_DIR" ]; then
-    SHARE_DIR="${TRIM_PKGVAR}/data"
-fi
-
-mkdir -p "${SHARE_DIR}/profiles" "${SHARE_DIR}/logs" "${TRIM_PKGVAR}/logs"
-chmod -R 777 "$SHARE_DIR" 2>/dev/null || true
-
-# Migrate existing profiles data if available
-if [ "$SHARE_DIR" != "${TRIM_PKGVAR}/data" ] && [ -d "${TRIM_PKGVAR}/data/profiles" ]; then
-    cp -rn "${TRIM_PKGVAR}/data/profiles"/* "$SHARE_DIR/profiles/" 2>/dev/null || true
-fi
-if [ -d "${TRIM_APPDEST}/shares/NovelAI/profiles" ] && [ "$SHARE_DIR" != "${TRIM_APPDEST}/shares/NovelAI" ]; then
-    cp -rn "${TRIM_APPDEST}/shares/NovelAI/profiles"/* "$SHARE_DIR/profiles/" 2>/dev/null || true
-fi
+# Storage defaults are resolved by configManager; startup never changes or migrates user storage.
+mkdir -p "${TRIM_PKGVAR}/logs"
 
 PID_FILE="${TRIM_PKGVAR}/server.pid"
-LOG_FILE="${SHARE_DIR}/logs/server.log"
+LOG_FILE="${TRIM_PKGVAR}/logs/server.log"
 SOCKET_FILE="${TRIM_APPDEST}/app.sock"
 
 case "$1" in
@@ -110,7 +50,6 @@ case "$1" in
         export SOCKET_PATH="$SOCKET_FILE"
         export TRIM_APPDEST="$TRIM_APPDEST"
         export TRIM_PKGVAR="$TRIM_PKGVAR"
-        export NOVELAI_SHARE_DIR="$SHARE_DIR"
         export GATEWAY_PREFIX="/app/novelai"
 
         SERVER_JS="${TRIM_APPDEST}/server/app.js"
@@ -121,10 +60,10 @@ case "$1" in
         # 运行日志轮转：启动时归档上一份日志，保留最新 5 份历史归档 + 1 份当前运行中的 server.log
         if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
             ARCHIVE_NAME="server_$(date "+%Y-%m-%d_%H%M%S").log"
-            mv "$LOG_FILE" "${SHARE_DIR}/logs/${ARCHIVE_NAME}" 2>/dev/null || true
+            mv "$LOG_FILE" "${TRIM_PKGVAR}/logs/${ARCHIVE_NAME}" 2>/dev/null || true
         fi
         # 清理超出 5 份的历史运行日志
-        ls -t "${SHARE_DIR}/logs"/server_*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+        ls -t "${TRIM_PKGVAR}/logs"/server_*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
 
         if ! command -v "$NODE_BIN" >/dev/null 2>&1 && [ ! -x "$NODE_BIN" ]; then
             echo "[Error] Node.js 运行时未找到！请确保在飞牛应用中心已安装 Node.js v22 (nodejs_v22)。" >> "$LOG_FILE"

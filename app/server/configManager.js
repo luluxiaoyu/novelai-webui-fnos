@@ -6,63 +6,25 @@ const PKG_VAR = process.env.TRIM_PKGVAR ? path.resolve(process.env.TRIM_PKGVAR) 
 
 // Detect fnOS user-facing shared directory (挂载到飞牛"文件管理"的共享文件夹)
 function getDetectedShareDir() {
-  if (process.env.NOVELAI_SHARE_DIR && fs.existsSync(process.env.NOVELAI_SHARE_DIR)) {
-    return process.env.NOVELAI_SHARE_DIR;
+  const raw = process.env.TRIM_DATA_SHARE_PATHS || '';
+  let sharedPaths = [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) sharedPaths = parsed.filter(p => typeof p === 'string');
+  } catch {
+    sharedPaths = fs.existsSync(raw) ? [raw] : raw.split(/[:;,\n\r]/).map(p => p.trim()).filter(Boolean);
   }
-  if (process.env.TRIM_DATA_SHARE_PATHS) {
-    const raw = process.env.TRIM_DATA_SHARE_PATHS.trim();
-    if (fs.existsSync(raw)) {
-      return raw;
-    }
-    const parts = raw.split(/[:;,\n\r]/).map(s => s.trim()).filter(Boolean);
-    const existing = parts.find(p => fs.existsSync(p));
-    if (existing) return existing;
-  }
-  // Singular /var/apps/novelai/share (official fnOS app share mount)
-  if (fs.existsSync('/var/apps/novelai/share/NovelAI-WebUI')) {
-    return '/var/apps/novelai/share/NovelAI-WebUI';
-  }
-  // Plural /var/apps/novelai/shares
-  if (fs.existsSync('/var/apps/novelai/shares/NovelAI-WebUI')) {
-    return '/var/apps/novelai/shares/NovelAI-WebUI';
-  }
-  const appDestShareWebUI = path.join(APP_DEST, 'share/NovelAI-WebUI');
-  if (fs.existsSync(appDestShareWebUI)) {
-    return appDestShareWebUI;
-  }
-  const appDestSharesWebUI = path.join(APP_DEST, 'shares/NovelAI-WebUI');
-  if (fs.existsSync(appDestSharesWebUI)) {
-    return appDestSharesWebUI;
-  }
-  for (let vol = 1; vol <= 9; vol++) {
-    const volAppShare = `/vol${vol}/@appshare/NovelAI-WebUI`;
-    if (fs.existsSync(volAppShare)) {
-      return volAppShare;
-    }
-    const volShare = `/vol${vol}/shares/NovelAI-WebUI`;
-    if (fs.existsSync(volShare)) {
-      return volShare;
-    }
-    const volShareSingular = `/vol${vol}/share/NovelAI-WebUI`;
-    if (fs.existsSync(volShareSingular)) {
-      return volShareSingular;
-    }
-  }
-  if (fs.existsSync('/var/apps/novelai/share/NovelAI')) {
-    return '/var/apps/novelai/share/NovelAI';
-  }
-  if (fs.existsSync('/var/apps/novelai/shares/NovelAI')) {
-    return '/var/apps/novelai/shares/NovelAI';
-  }
-  const appDestShare = path.join(APP_DEST, 'share/NovelAI');
-  if (fs.existsSync(appDestShare)) {
-    return appDestShare;
-  }
-  const appDestShares = path.join(APP_DEST, 'shares/NovelAI');
-  if (fs.existsSync(appDestShares)) {
-    return appDestShares;
-  }
-  return null;
+  const candidates = [
+    process.env.NOVELAI_SHARE_DIR,
+    ...sharedPaths,
+    '/var/apps/novelai/shares/NovelAI-WebUI',
+    '/var/apps/novelai/share/NovelAI-WebUI',
+    path.join(APP_DEST, 'shares/NovelAI-WebUI'),
+    path.join(APP_DEST, 'share/NovelAI-WebUI')
+  ];
+  return candidates.find(p => {
+    try { return p && fs.statSync(p).isDirectory(); } catch { return false; }
+  }) || null;
 }
 
 const DETECTED_SHARE = getDetectedShareDir();
@@ -116,23 +78,9 @@ function loadConfig() {
       cachedConfig = { ...DEFAULT_CONFIG, ...parsed };
       cachedConfig.imageSubdirPattern = normalizeImageSubdirPattern(cachedConfig.imageSubdirPattern);
 
-      // If user-facing share directory is available or invalid path, fallback to DATA_DIR
-      const currentShare = getDetectedShareDir();
-      const internalVarData = path.join(PKG_VAR, 'data');
-      if (
-        !cachedConfig.storagePath ||
-        cachedConfig.storagePath.startsWith('/tmp/') ||
-        cachedConfig.storagePath.includes('/var/apps/novelai/var/data') ||
-        (currentShare && (
-          path.resolve(cachedConfig.storagePath) === path.resolve(internalVarData) ||
-          cachedConfig.storagePath === './data' ||
-          cachedConfig.storagePath.endsWith('/var/data') ||
-          cachedConfig.storagePath.includes('@appdata')
-        )) ||
-        (!fs.existsSync(cachedConfig.storagePath) && (currentShare || DATA_DIR))
-      ) {
-        cachedConfig.storagePath = currentShare || DATA_DIR;
-        saveConfig(cachedConfig);
+      // An unavailable disk or revoked grant must not silently change the user's storage.
+      if (typeof cachedConfig.storagePath !== 'string' || !cachedConfig.storagePath.trim()) {
+        cachedConfig.storagePath = DATA_DIR;
       }
       return cachedConfig;
     }
@@ -170,7 +118,7 @@ function updateConfig(partial) {
     toMerge.imageSubdirPattern = normalizeImageSubdirPattern(toMerge.imageSubdirPattern);
   }
   const updated = { ...current, ...toMerge };
-  saveConfig(updated);
+  if (!saveConfig(updated)) throw new Error('保存应用配置失败');
   return updated;
 }
 

@@ -7,6 +7,7 @@ const { queueManager } = require('./queueManager');
 const profileManager = require('./profileManager');
 const proxyClient = require('./proxyClient');
 const storageManager = require('./storageManager');
+const { canManageStorage, assertStorageAdmin } = require('./fnosApi');
 
 // ==================== Settings & Auth Status ====================
 
@@ -16,6 +17,7 @@ router.get('/settings', (req, res) => {
     apiToken: cfg.apiToken || '',
     apiBaseUrl: cfg.apiBaseUrl || 'https://image.novelai.net',
     storagePath: cfg.storagePath,
+    canManageStorage: canManageStorage(req),
     imageSubdirPattern: cfg.imageSubdirPattern || DEFAULT_IMAGE_SUBDIR_PATTERN,
     activeProfile: cfg.activeProfile || 'Default',
     enableEncryption: !!cfg.enableEncryption,
@@ -30,17 +32,19 @@ router.get('/settings', (req, res) => {
   });
 });
 
-router.post('/settings', (req, res) => {
+router.post('/settings', async (req, res) => {
   try {
-    const body = req.body || {};
-    if (body.storagePath) {
-      const current = getConfig();
-      const curResolved = path.resolve(current.storagePath || '');
-      const newResolved = path.resolve(body.storagePath);
-      if (curResolved !== newResolved || current.storagePath !== body.storagePath) {
-        const switchRes = storageManager.switchStoragePath(body.storagePath);
-        body.storagePath = switchRes.storagePath;
+    const body = { ...(req.body || {}) };
+    if (Object.hasOwn(body, 'storagePath')) {
+      if (typeof body.storagePath !== 'string' || !body.storagePath.trim()) {
+        return res.status(400).json({ success: false, error: '存储路径不能为空' });
       }
+      if (body.storagePath !== getConfig().storagePath) {
+        const target = await storageManager.assertStorageAccess(req, body.storagePath);
+        storageManager.switchStoragePath(target);
+      }
+      // The storage operation has already persisted its result; never replay a stale path in the general merge.
+      delete body.storagePath;
     }
     const updated = updateConfig(body);
     res.json({
@@ -49,7 +53,7 @@ router.post('/settings', (req, res) => {
       settings: updated
     });
   } catch (err) {
-    res.status(500).json({ error: err.message || '保存设置失败' });
+    res.status(err.statusCode || 500).json({ error: err.message || '保存设置失败' });
   }
 });
 
@@ -63,17 +67,19 @@ router.get('/config', (req, res) => {
   });
 });
 
-router.post('/config', (req, res) => {
+router.post('/config', async (req, res) => {
   try {
-    const data = req.body?.config || req.body || {};
-    if (data.storagePath) {
-      const current = getConfig();
-      const curResolved = path.resolve(current.storagePath || '');
-      const newResolved = path.resolve(data.storagePath);
-      if (curResolved !== newResolved || current.storagePath !== data.storagePath) {
-        const switchRes = storageManager.switchStoragePath(data.storagePath);
-        data.storagePath = switchRes.storagePath;
+    const data = { ...(req.body?.config || req.body || {}) };
+    if (Object.hasOwn(data, 'storagePath')) {
+      if (typeof data.storagePath !== 'string' || !data.storagePath.trim()) {
+        return res.status(400).json({ success: false, error: '存储路径不能为空' });
       }
+      if (data.storagePath !== getConfig().storagePath) {
+        const target = await storageManager.assertStorageAccess(req, data.storagePath);
+        storageManager.switchStoragePath(target);
+      }
+      // The storage operation has already persisted its result; never replay a stale path in the general merge.
+      delete data.storagePath;
     }
     const updated = updateConfig(data);
     res.json({
@@ -83,7 +89,7 @@ router.post('/config', (req, res) => {
       config: updated
     });
   } catch (err) {
-    res.status(500).json({ error: err.message || '保存配置失败' });
+    res.status(err.statusCode || 500).json({ error: err.message || '保存配置失败' });
   }
 });
 
@@ -159,9 +165,9 @@ router.post('/auth/verify-access', (req, res) => {
 // ==================== Storage Directory Management ====================
 
 // List authorized storage paths & check write status
-router.get('/storage/authorized-paths', (req, res) => {
+router.get('/storage/authorized-paths', async (req, res) => {
   try {
-    const data = storageManager.getAuthorizedPaths();
+    const data = await storageManager.getAuthorizedPaths(req);
     res.json({ success: true, ...data });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message || '获取已授权目录列表失败' });
@@ -169,13 +175,14 @@ router.get('/storage/authorized-paths', (req, res) => {
 });
 
 // Test whether a candidate path is writable
-router.post('/storage/validate-path', (req, res) => {
+router.post('/storage/validate-path', async (req, res) => {
   try {
-    const { path: targetPath, createIfMissing } = req.body || {};
+    const { path: targetPath } = req.body || {};
     if (!targetPath || typeof targetPath !== 'string' || !targetPath.trim()) {
       return res.status(400).json({ success: false, error: '请提供待验证的存储路径' });
     }
-    const result = storageManager.validatePath(targetPath, !!createIfMissing);
+    const target = await storageManager.assertStorageAccess(req, targetPath);
+    const result = storageManager.validatePath(target, false);
     if (result.writable) {
       return res.json({
         success: true,
@@ -194,18 +201,19 @@ router.post('/storage/validate-path', (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message || '路径验证失败' });
+    res.status(err.statusCode || 500).json({ success: false, error: err.message || '路径验证失败' });
   }
 });
 
 // Safely switch storage path, ensuring profiles/ exists and flushing DB cache
-router.post('/storage/switch', (req, res) => {
+router.post('/storage/switch', async (req, res) => {
   try {
     const { path: targetPath } = req.body || {};
     if (!targetPath || typeof targetPath !== 'string' || !targetPath.trim()) {
       return res.status(400).json({ success: false, error: '请提供目标存储路径' });
     }
-    const result = storageManager.switchStoragePath(targetPath);
+    const target = await storageManager.assertStorageAccess(req, targetPath);
+    const result = storageManager.switchStoragePath(target);
     res.json({
       success: true,
       message: '存储目录已成功切换并即时生效',
@@ -213,13 +221,14 @@ router.post('/storage/switch', (req, res) => {
       config: result.config
     });
   } catch (err) {
-    res.status(400).json({ success: false, error: err.message || '切换存储路径失败' });
+    res.status(err.statusCode || 400).json({ success: false, error: err.message || '切换存储路径失败' });
   }
 });
 
 // Start incremental merge between storage directories
-router.post('/storage/merge', (req, res) => {
+router.post('/storage/merge', async (req, res) => {
   try {
+    assertStorageAdmin(req);
     const { sourcePath, targetPath, switchOnComplete = true } = req.body || {};
     if (!targetPath || typeof targetPath !== 'string' || !targetPath.trim()) {
       return res.status(400).json({ success: false, error: '请提供目标存储路径' });
@@ -229,7 +238,12 @@ router.post('/storage/merge', (req, res) => {
       ? sourcePath.trim() 
       : currentCfg.storagePath;
 
-    const startResult = storageManager.startMergeJob(src, targetPath.trim(), !!switchOnComplete);
+    if (storageManager.canonicalPath(src) !== storageManager.canonicalPath(currentCfg.storagePath)) {
+      return res.status(400).json({ success: false, error: '合并来源必须是当前生效的存储目录' });
+    }
+    await storageManager.assertStorageAccess(req, src);
+    const target = await storageManager.assertStorageAccess(req, targetPath);
+    const startResult = storageManager.startMergeJob(src, target, !!switchOnComplete);
     res.json({
       success: true,
       jobId: startResult.jobId,
@@ -237,7 +251,7 @@ router.post('/storage/merge', (req, res) => {
       status: startResult.status
     });
   } catch (err) {
-    res.status(400).json({ success: false, error: err.message || '启动增量合并失败' });
+    res.status(err.statusCode || 400).json({ success: false, error: err.message || '启动增量合并失败' });
   }
 });
 

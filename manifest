@@ -12,3 +12,5 @@ desktop_uidir=ui
 desktop_applaunchname=novelai.Application
 install_dep_apps=nodejs_v22
 ctl_stop=true
+
+micro_app=true

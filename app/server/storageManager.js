@@ -1,8 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
-const { getConfig, updateConfig, APP_DEST, PKG_VAR } = require('./configManager');
+const { getConfig, updateConfig, DATA_DIR } = require('./configManager');
 const { closeAllDbs, initDbSchema } = require('./profileDb');
+const { isFnosRuntime, assertStorageAdmin, callFnosApi, checkUserPaths } = require('./fnosApi');
 
 /**
  * Test whether a path exists, is a directory, and is writable.
@@ -49,9 +50,7 @@ function testPathWritable(targetPath) {
     const testFilePath = path.join(cleanPath, testFileName);
     try {
       fs.writeFileSync(testFilePath, 'ok', { flag: 'wx' });
-      try {
-        fs.unlinkSync(testFilePath);
-      } catch {}
+      fs.unlinkSync(testFilePath);
       return { exists: true, writable: true, reason: null };
     } catch (writeErr) {
       return {
@@ -65,291 +64,130 @@ function testPathWritable(targetPath) {
   }
 }
 
-/**
- * Scan system for all authorized/accessible storage paths.
- * @returns {{ currentPath: string, paths: Array<object> }}
- */
-function getAuthorizedPaths() {
-  const currentCfg = getConfig();
-  let currentResolved = null;
-  if (currentCfg.storagePath) {
-    const rawCur = path.resolve(currentCfg.storagePath);
-    currentResolved = rawCur;
-    try {
-      if (fs.existsSync(rawCur)) {
-        currentResolved = fs.realpathSync(rawCur);
-      }
-    } catch {}
-  }
-
-  const candidates = [];
-
-  // 1. Current configured storagePath MUST be included even if not created on disk yet
-  if (currentCfg.storagePath) {
-    const curPath = path.resolve(currentCfg.storagePath);
-    candidates.push({ rawPath: curPath, source: 'current_config', shareName: path.basename(curPath) });
-  }
-
-  // Helper to parse multi-path strings (JSON array or delimiter separated)
-  const parsePathList = (val) => {
-    if (!val || typeof val !== 'string') return [];
-    const trimmed = val.trim();
-    if (!trimmed) return [];
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+// Resolve existing ancestors too, so a missing child cannot escape through a symlink.
+function canonicalPath(targetPath, depth = 0) {
+  if (depth > 40) throw new Error('目录符号链接层级过深');
+  const resolved = path.resolve(targetPath);
+  let ancestor = resolved;
+  let suffix = '';
+  while (true) {
+    try { return path.join(fs.realpathSync(ancestor), suffix); }
+    catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
       try {
-        const arr = JSON.parse(trimmed);
-        if (Array.isArray(arr)) {
-          return arr.map(s => String(s).trim()).filter(Boolean);
+        if (fs.lstatSync(ancestor).isSymbolicLink()) {
+          return path.join(canonicalPath(path.resolve(path.dirname(ancestor), fs.readlinkSync(ancestor)), depth + 1), suffix);
         }
-      } catch {}
-    }
-    // If it exists as a single intact directory path (even with spaces or unusual characters), prefer that
-    if (fs.existsSync(trimmed)) {
-      return [trimmed];
-    }
-    // Otherwise split on colon, semicolon, comma, or newlines
-    return trimmed.split(/[:;,\n\r]/).map(s => s.trim()).filter(Boolean);
-  };
-
-  // 2. Scan environment variables
-  const envVars = [
-    process.env.TRIM_DATA_SHARE_PATHS,
-    process.env.TRIM_SHARE_PATHS,
-    process.env.TRIM_SHARE_DIR,
-    process.env.TRIM_APP_SHARE,
-    process.env.NOVELAI_SHARE_DIR
-  ];
-
-  for (const envVal of envVars) {
-    const parsedPaths = parsePathList(envVal);
-    for (const p of parsedPaths) {
-      if (fs.existsSync(p)) {
-        try {
-          if (fs.statSync(p).isDirectory()) {
-            candidates.push({ rawPath: p, source: 'env_share', shareName: path.basename(p) });
-            // If the path itself is a shares container directory, also scan its child directories
-            const children = fs.readdirSync(p, { withFileTypes: true });
-            for (const child of children) {
-              if (child.name.startsWith('.')) continue;
-              const childPath = path.join(p, child.name);
-              try {
-                if (fs.statSync(childPath).isDirectory()) {
-                  candidates.push({ rawPath: childPath, source: 'env_share_entry', shareName: child.name });
-                }
-              } catch {}
-            }
-          }
-        } catch {}
+      } catch (linkError) {
+        if (linkError.code !== 'ENOENT' && linkError.code !== 'ENOTDIR') throw linkError;
       }
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      suffix = path.join(path.basename(ancestor), suffix);
+      ancestor = parent;
     }
   }
+}
 
-  // 3. Mount shares directories:
-  // Both singular ('share') and plural ('shares') under /var/apps/novelai, APP_DEST, and PKG_VAR
-  const sharesDirs = [
-    '/var/apps/novelai/share',
-    '/var/apps/novelai/shares',
-    '/var/apps/novelai-webui/share',
-    '/var/apps/novelai-webui/shares',
-    path.join(APP_DEST, 'share'),
-    path.join(APP_DEST, 'shares'),
-    path.join(PKG_VAR, 'share'),
-    path.join(PKG_VAR, 'shares')
-  ];
+function withinDirectory(target, root) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
 
-  for (const sharesDir of sharesDirs) {
-    try {
-      if (fs.existsSync(sharesDir) && fs.statSync(sharesDir).isDirectory()) {
-        const entries = fs.readdirSync(sharesDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.name.startsWith('.')) continue;
-          const fullPath = path.join(sharesDir, entry.name);
-          try {
-            if (fs.statSync(fullPath).isDirectory()) {
-              candidates.push({ rawPath: fullPath, source: 'shares_dir', shareName: entry.name });
-            }
-          } catch {}
-        }
-        if (sharesDir.endsWith('NovelAI-WebUI') || sharesDir.endsWith('NovelAI')) {
-          candidates.push({ rawPath: sharesDir, source: 'app_share_dir', shareName: path.basename(sharesDir) });
-        }
-      }
-    } catch (err) {
-      console.warn(`[StorageManager] Failed to read shares dir ${sharesDir}:`, err.message);
+async function getAuthorizationRoots() {
+  const roots = [{ path: DATA_DIR, type: 'app_share', name: '默认应用目录' }];
+  try {
+    if (!isFnosRuntime()) throw new Error('当前为本地运行环境，仅提供默认目录和当前配置');
+    const result = await callFnosApi('trim.file.getSharedAccessibleFolders');
+    if (!Array.isArray(result?.paths) || !result.paths.every(p => typeof p === 'string' && path.isAbsolute(p))) {
+      throw new Error('飞牛授权目录响应格式无效');
     }
+    roots.push(...result.paths.map(p => ({ path: p, type: 'share', name: `已授权目录：${path.basename(p)}` })));
+    return { roots, authorizationStatus: 'available', warning: null };
+  } catch (error) {
+    return { roots, authorizationStatus: 'unavailable', warning: `未能同步飞牛授权目录：${error.message}。保留默认目录和原有配置；新目录授权需要 fnOS 1.2.0401 或更高版本。` };
   }
+}
 
-  // 4. Specific NovelAI app share checks
-  const specificShares = [
-    '/var/apps/novelai/share/NovelAI-WebUI',
-    '/var/apps/novelai/shares/NovelAI-WebUI',
-    '/var/apps/novelai-webui/share/NovelAI-WebUI',
-    '/var/apps/novelai-webui/shares/NovelAI-WebUI',
-    path.join(APP_DEST, 'share/NovelAI-WebUI'),
-    path.join(APP_DEST, 'shares/NovelAI-WebUI'),
-    path.join(PKG_VAR, 'share/NovelAI-WebUI'),
-    path.join(PKG_VAR, 'shares/NovelAI-WebUI'),
-    '/var/apps/novelai/share/NovelAI',
-    '/var/apps/novelai/shares/NovelAI',
-    path.join(APP_DEST, 'share/NovelAI'),
-    path.join(APP_DEST, 'shares/NovelAI')
-  ];
-  for (const sp of specificShares) {
-    try {
-      if (fs.existsSync(sp) && fs.statSync(sp).isDirectory()) {
-        candidates.push({ rawPath: sp, source: 'app_share_specific', shareName: path.basename(sp) });
-      }
-    } catch {}
-  }
-
-  // 5. Volume mounts across /vol1 through /vol9
-  for (let vol = 1; vol <= 9; vol++) {
-    const volAppShare = `/vol${vol}/@appshare/NovelAI-WebUI`;
-    if (fs.existsSync(volAppShare)) {
-      candidates.push({ rawPath: volAppShare, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
-    }
-    const volShareNovelAI = `/vol${vol}/shares/NovelAI-WebUI`;
-    if (fs.existsSync(volShareNovelAI)) {
-      candidates.push({ rawPath: volShareNovelAI, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
-    }
-    const volShareSingular = `/vol${vol}/share/NovelAI-WebUI`;
-    if (fs.existsSync(volShareSingular)) {
-      candidates.push({ rawPath: volShareSingular, source: 'app_share_vol', shareName: 'NovelAI-WebUI' });
-    }
-    // Scan containers: shares, share, @appshare, @share
-    for (const sub of ['shares', 'share', '@appshare', '@share']) {
-      const parentDir = `/vol${vol}/${sub}`;
-      try {
-        if (fs.existsSync(parentDir) && fs.statSync(parentDir).isDirectory()) {
-          const entries = fs.readdirSync(parentDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.name.startsWith('.')) continue;
-            const fullPath = path.join(parentDir, entry.name);
-            try {
-              if (fs.statSync(fullPath).isDirectory()) {
-                candidates.push({ rawPath: fullPath, source: sub === '@appshare' ? 'vol_appshare' : 'vol_share', shareName: entry.name });
-              }
-            } catch {}
-          }
-        }
-      } catch {}
-    }
-  }
-
-  // 6. Default package var data dir (${TRIM_PKGVAR}/data)
-  const defaultVarData = path.join(PKG_VAR, 'data');
-  candidates.push({ rawPath: defaultVarData, source: 'default_data', shareName: 'data' });
-
-  // Deduplicate entries by canonical real path
-  const seenRealPaths = new Set();
-  let results = [];
-
+// Listing is read-only: no probing files, mkdir, config writes, or implicit migration.
+async function getAuthorizedPaths(req) {
+  const currentPath = getConfig().storagePath;
+  const authorization = await getAuthorizationRoots();
+  const candidates = [...authorization.roots, { path: currentPath, type: 'custom', name: '当前配置目录（未确认授权）' }];
+  const paths = [];
+  let currentReal;
+  try { currentReal = canonicalPath(currentPath); } catch { currentReal = path.resolve(currentPath); }
   for (const item of candidates) {
-    const resolvedPath = path.resolve(item.rawPath);
-    let realPath = resolvedPath;
-    try {
-      if (fs.existsSync(resolvedPath)) {
-        realPath = fs.realpathSync(resolvedPath);
-      }
-    } catch {}
-
-    const key = realPath.toLowerCase();
-    if (seenRealPaths.has(key)) {
+    const mountPath = path.resolve(item.path);
+    let realPath;
+    try { realPath = canonicalPath(mountPath); } catch { realPath = mountPath; }
+    const existing = paths.find(entry => entry.path === realPath);
+    if (existing) {
+      if (!existing.aliases.includes(mountPath)) existing.aliases.push(mountPath);
       continue;
     }
-    seenRealPaths.add(key);
-
-    // If path exists on disk, ensure it is a directory (skip non-directory files)
+    const entry = { path: realPath, mountPath: realPath !== mountPath ? mountPath : null, aliases: [mountPath], name: item.name, type: item.type,
+      authorization: item.type === 'custom' ? 'unconfirmed' : (item.type === 'share' ? 'shared' : 'default'),
+      exists: false, writable: false, reason: null, isCurrent: realPath === currentReal };
     try {
-      if (fs.existsSync(realPath) && !fs.statSync(realPath).isDirectory()) {
-        continue;
+      entry.exists = fs.statSync(realPath).isDirectory();
+      if (!entry.exists) throw new Error('指定路径不是目录');
+      fs.accessSync(realPath, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
+      entry.writable = true;
+    } catch (error) { entry.reason = error.code === 'ENOENT' ? '目录不存在' : error.message; }
+    if (item.type === 'custom' && authorization.authorizationStatus === 'available') {
+      entry.authorization = authorization.roots.some(root => {
+        try { return withinDirectory(realPath, canonicalPath(root.path)); } catch { return false; }
+      }) ? 'shared' : 'unconfirmed';
+    }
+    if (item.type === 'custom') entry.name = entry.authorization === 'shared' ? '当前配置目录（位于授权范围内）' : '当前配置目录（未确认授权）';
+    paths.push(entry);
+  }
+  if (isFnosRuntime() && authorization.authorizationStatus === 'available' && req) {
+    try {
+      const acls = await checkUserPaths(req, paths.map(p => p.path));
+      for (const item of paths) {
+        const acl = acls.find(acl => acl.path === item.path);
+        if (!acl?.readable || !acl?.writable) { item.writable = false; item.reason = '当前飞牛用户没有此目录的读写权限'; }
       }
-    } catch {}
-
-    const writeCheck = testPathWritable(realPath);
-
-    // Format friendly display name & category (strictly no emojis, professional terminology)
-    let friendlyName = '';
-    let itemType = 'custom';
-    const baseName = item.shareName || path.basename(realPath);
-
-    if (
-      baseName === 'NovelAI-WebUI' || 
-      baseName === 'NovelAI' || 
-      realPath.endsWith('/share/NovelAI-WebUI') || 
-      realPath.endsWith('/shares/NovelAI-WebUI') || 
-      realPath.includes('@appshare/NovelAI-WebUI') ||
-      realPath.includes('/shares/NovelAI-WebUI') ||
-      realPath.includes('/share/NovelAI-WebUI')
-    ) {
-      friendlyName = '应用文件/NovelAI-WebUI (默认)';
-      itemType = 'app_share';
-    } else if (item.source === 'default_data' || realPath.includes('/var/data') || realPath.includes('@appdata') || realPath.endsWith('/var/data')) {
-      friendlyName = `应用私有目录: ${baseName}`;
-      itemType = 'appdata';
-    } else if (
-      item.source === 'shares_dir' || 
-      item.source === 'vol_share' || 
-      item.source === 'env_share' || 
-      item.source === 'env_share_entry' ||
-      realPath.includes('/shares/') || 
-      realPath.includes('/share/')
-    ) {
-      friendlyName = `共享文件夹: ${baseName}`;
-      itemType = 'share';
-    } else {
-      friendlyName = `自定义路径: ${baseName}`;
-      itemType = 'custom';
-    }
-
-    const isCurrent = currentResolved ? (currentResolved === realPath || currentResolved === resolvedPath) : false;
-
-    results.push({
-      path: realPath,
-      mountPath: resolvedPath !== realPath ? resolvedPath : null,
-      name: friendlyName,
-      type: itemType,
-      exists: writeCheck.exists,
-      writable: writeCheck.writable,
-      reason: writeCheck.reason,
-      isCurrent: !!isCurrent
-    });
-  }
-
-  // When App Shared Directory is available and exists, hide internal private directory (@appdata)
-  // Safety guarantee: only filter if there are other valid paths so results is never empty
-  const hasAppShare = results.some(r => r.type === 'app_share' && r.exists);
-  if (hasAppShare && results.length > 1) {
-    const nonAppData = results.filter(r => !(r.type === 'appdata' || r.path.includes('/var/data') || r.path.includes('@appdata')));
-    if (nonAppData.length > 0) {
-      results = nonAppData;
+    } catch (error) {
+      for (const item of paths) { item.writable = false; item.reason = `用户权限检查失败：${error.message}`; }
     }
   }
+  return { currentPath, paths, authorizationStatus: authorization.authorizationStatus, warning: authorization.warning };
+}
 
-  // When App Shared Directory is available and current storagePath points to internal var/data, switch default to app_share
-  const appShareItem = results.find(r => r.type === 'app_share' && r.writable) || results.find(r => r.type === 'app_share');
-  if (appShareItem && (!currentResolved || currentResolved.includes('/var/data') || currentResolved.includes('@appdata') || currentResolved === path.resolve(defaultVarData))) {
-    currentResolved = appShareItem.path;
-    appShareItem.isCurrent = true;
-    updateConfig({ storagePath: appShareItem.path });
+async function assertStorageAccess(req, targetPath) {
+  assertStorageAdmin(req);
+  if (typeof targetPath !== 'string' || !path.isAbsolute(targetPath.trim()) || targetPath.includes('\0') || targetPath.split(/[\\/]/).includes('..')) {
+    throw new Error('请提供不含上级目录跳转的绝对路径');
   }
-
-  // Ensure current path is marked isCurrent if not already
-  const hasCurrent = results.some(r => r.isCurrent);
-  if (!hasCurrent && results.length > 0 && currentResolved) {
-    const match = results.find(r => r.path === currentResolved || r.mountPath === currentResolved);
-    if (match) {
-      match.isCurrent = true;
+  const cleanPath = canonicalPath(targetPath.trim());
+  const authorization = await getAuthorizationRoots();
+  const allowed = authorization.roots.some(root => {
+    try { return withinDirectory(cleanPath, canonicalPath(root.path)); } catch { return false; }
+  });
+  let legacyCurrent = false;
+  if (!allowed && authorization.authorizationStatus === 'unavailable') {
+    try { legacyCurrent = cleanPath === canonicalPath(getConfig().storagePath); } catch {}
+  }
+  if (!allowed && !legacyCurrent) {
+    const error = new Error(authorization.authorizationStatus === 'unavailable' ? authorization.warning : '目标不在应用已授权目录范围内，请先添加授权');
+    error.statusCode = 403;
+    throw error;
+  }
+  if (isFnosRuntime() && authorization.authorizationStatus === 'available') {
+    let existingPath = cleanPath;
+    while (!fs.existsSync(existingPath) && path.dirname(existingPath) !== existingPath) existingPath = path.dirname(existingPath);
+    const acls = await checkUserPaths(req, [existingPath]);
+    const acl = acls.find(item => item.path === existingPath);
+    if (!acl?.readable || !acl?.writable) {
+      const error = new Error('当前飞牛用户没有目标目录的读写权限');
+      error.statusCode = 403;
+      throw error;
     }
   }
-
-  const activeItem = results.find(r => r.isCurrent);
-  const activePath = activeItem ? activeItem.path : (appShareItem ? appShareItem.path : (currentResolved || currentCfg.storagePath || (results[0] ? results[0].path : '')));
-
-  return {
-    currentPath: activePath,
-    paths: results
-  };
+  return cleanPath;
 }
 
 /**
@@ -383,7 +221,7 @@ function switchStoragePath(newPath) {
     throw new Error('目标存储路径不能为空');
   }
 
-  const cleanPath = path.resolve(newPath.trim());
+  const cleanPath = canonicalPath(newPath.trim());
 
   // Ensure target folder exists or create it
   if (!fs.existsSync(cleanPath)) {
@@ -974,6 +812,8 @@ function getMergeJobStatus(jobId) {
 module.exports = {
   testPathWritable,
   getAuthorizedPaths,
+  assertStorageAccess,
+  canonicalPath,
   validatePath,
   switchStoragePath,
   scanFilesToCopy,

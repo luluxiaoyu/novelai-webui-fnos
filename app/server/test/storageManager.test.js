@@ -75,31 +75,20 @@ describe('StorageManager & Authorized Paths Tests', () => {
     assert.match(fileRes.reason, /不是一个目录/);
   });
 
-  test('2. getAuthorizedPaths discovers env vars, shares directory, and default data dir', () => {
-    const extraShareDir = path.join(TEST_BASE, 'extra_share');
-    fs.mkdirSync(extraShareDir, { recursive: true });
-    process.env.TRIM_DATA_SHARE_PATHS = `${extraShareDir}:/non_existent_share`;
-
-    const res = storageManager.getAuthorizedPaths();
+  test('2. getAuthorizedPaths discovers authorized roots and marks current path', async () => {
+    const res = await storageManager.getAuthorizedPaths();
     assert.ok(res.paths && Array.isArray(res.paths));
-    assert.ok(res.paths.length >= 3);
-
-    const pathsList = res.paths.map(p => p.path);
-    // Should include extraShareDir
-    assert.ok(pathsList.includes(fs.realpathSync(extraShareDir)));
-    // Should include NOVELAI_SHARE_DIR
-    assert.ok(pathsList.includes(fs.realpathSync(process.env.NOVELAI_SHARE_DIR)));
-    // Should include shares link target
-    assert.ok(pathsList.includes(fs.realpathSync(TEST_REAL_SHARE)));
+    assert.ok(res.paths.length >= 1);
+    assert.ok(res.currentPath);
 
     // Verify current path is marked
     const currentEntry = res.paths.find(p => p.isCurrent);
     assert.ok(currentEntry, 'At least one entry should have isCurrent: true');
 
-    // Friendly names verification
-    const shareEntry = res.paths.find(p => p.path === fs.realpathSync(TEST_REAL_SHARE));
-    assert.ok(shareEntry);
-    assert.match(shareEntry.name, /共享文件夹/);
+    // Default application directory verification
+    const defaultEntry = res.paths.find(p => p.type === 'app_share');
+    assert.ok(defaultEntry, 'Default application share entry must exist');
+    assert.equal(defaultEntry.name, '默认应用目录');
   });
 
   test('3. validatePath validates paths and supports createIfMissing', () => {
@@ -128,7 +117,7 @@ describe('StorageManager & Authorized Paths Tests', () => {
 
     const switchResult = storageManager.switchStoragePath(targetDir);
     assert.equal(switchResult.success, true);
-    assert.equal(switchResult.storagePath, targetDir);
+    assert.equal(switchResult.storagePath, storageManager.canonicalPath(targetDir));
 
     // profiles/ directory must have been created
     const profilesDir = path.join(targetDir, 'profiles');
@@ -136,7 +125,7 @@ describe('StorageManager & Authorized Paths Tests', () => {
 
     // Config must reflect the new path
     const updatedCfg = configManager.getConfig();
-    assert.equal(updatedCfg.storagePath, targetDir);
+    assert.equal(updatedCfg.storagePath, storageManager.canonicalPath(targetDir));
 
     // Opening DB now will open in targetDir/profiles/Default
     const newDb = profileDb.getDb(path.join(targetDir, 'profiles/Default'), 'Default');
@@ -156,7 +145,7 @@ describe('StorageManager & Authorized Paths Tests', () => {
 
 describe('Storage API Express HTTP Endpoints Tests', () => {
 
-  function invoke(method, urlPath, body = null) {
+  function invoke(method, urlPath, body = null, customHeaders = {}) {
     return new Promise((resolve) => {
       let qIdx = urlPath.indexOf('?');
       let pathOnly = qIdx !== -1 ? urlPath.slice(0, qIdx) : urlPath;
@@ -177,7 +166,12 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
         path: pathOnly,
         query,
         body: body || {},
-        headers: { 'content-type': 'application/json' }
+        headers: {
+          'content-type': 'application/json',
+          'x-trim-isadmin': 'true',
+          'x-trim-userid': '1000',
+          ...customHeaders
+        }
       };
 
       const res = {
@@ -217,32 +211,37 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(errRes.status, 400);
     assert.equal(errRes.data.success, false);
 
-    // Valid path
-    const validDir = path.join(TEST_BASE, 'api_validate_test');
+    // Valid path inside authorized roots
+    const validDir = path.join(configManager.DATA_DIR, 'api_validate_test');
     fs.mkdirSync(validDir, { recursive: true });
     const okRes = await invoke('POST', '/storage/validate-path', { path: validDir });
     assert.equal(okRes.status, 200);
     assert.equal(okRes.data.success, true);
     assert.equal(okRes.data.writable, true);
 
-    // Non-existent path
-    const noExistRes = await invoke('POST', '/storage/validate-path', { path: path.join(TEST_BASE, 'no_such_dir_1234') });
+    // Non-existent path inside authorized roots
+    const noExistRes = await invoke('POST', '/storage/validate-path', { path: path.join(configManager.DATA_DIR, 'no_such_dir_1234') });
     assert.equal(noExistRes.status, 200);
     assert.equal(noExistRes.data.success, false);
     assert.equal(noExistRes.data.writable, false);
+
+    // Unauthorized path outside roots -> 403
+    const unauthorizedRes = await invoke('POST', '/storage/validate-path', { path: path.join(TEST_BASE, 'unauthorized_dir') });
+    assert.equal(unauthorizedRes.status, 403);
+    assert.equal(unauthorizedRes.data.success, false);
   });
 
   test('8. POST /storage/switch switches active path and updates config', async () => {
-    const newStorage = path.join(TEST_BASE, 'api_switch_target');
+    const newStorage = path.join(configManager.DATA_DIR, 'api_switch_target');
     fs.mkdirSync(newStorage, { recursive: true });
 
     const res = await invoke('POST', '/storage/switch', { path: newStorage });
     assert.equal(res.status, 200);
     assert.equal(res.data.success, true);
-    assert.equal(res.data.storagePath, newStorage);
+    assert.equal(res.data.storagePath, storageManager.canonicalPath(newStorage));
 
     assert.ok(fs.existsSync(path.join(newStorage, 'profiles')));
-    assert.equal(configManager.getConfig().storagePath, newStorage);
+    assert.equal(configManager.getConfig().storagePath, storageManager.canonicalPath(newStorage));
   });
 
   test('9. POST /storage/switch rejects empty or invalid path with 400', async () => {
@@ -252,7 +251,7 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
   });
 
   test('10. POST /settings with storagePath safely delegates to switchStoragePath', async () => {
-    const settingsTarget = path.join(TEST_BASE, 'api_settings_target');
+    const settingsTarget = path.join(configManager.DATA_DIR, 'api_settings_target');
     fs.mkdirSync(settingsTarget, { recursive: true });
 
     const res = await invoke('POST', '/settings', {
@@ -263,11 +262,11 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(res.data.success, true);
     assert.ok(fs.existsSync(path.join(settingsTarget, 'profiles')));
     assert.ok(fs.existsSync(path.join(settingsTarget, 'logs')));
-    assert.equal(configManager.getConfig().storagePath, settingsTarget);
+    assert.equal(configManager.getConfig().storagePath, storageManager.canonicalPath(settingsTarget));
   });
 
   test('11. POST /config with storagePath safely delegates to switchStoragePath', async () => {
-    const configTarget = path.join(TEST_BASE, 'api_config_target');
+    const configTarget = path.join(configManager.DATA_DIR, 'api_config_target');
     fs.mkdirSync(configTarget, { recursive: true });
 
     const res = await invoke('POST', '/config', {
@@ -276,7 +275,7 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(res.status, 200);
     assert.equal(res.data.success, true);
     assert.ok(fs.existsSync(path.join(configTarget, 'profiles')));
-    assert.equal(configManager.getConfig().storagePath, configTarget);
+    assert.equal(configManager.getConfig().storagePath, storageManager.canonicalPath(configTarget));
   });
 
   test('12. switchStoragePath through a symlink resolves to real path and creates profiles and logs', () => {
@@ -290,7 +289,7 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     if (fs.existsSync(symlinkPath)) {
       const res = storageManager.switchStoragePath(symlinkPath);
       assert.equal(res.success, true);
-      assert.equal(res.storagePath, symlinkPath);
+      assert.equal(res.storagePath, storageManager.canonicalPath(symlinkPath));
       assert.ok(fs.existsSync(path.join(realDir, 'profiles')));
       assert.ok(fs.existsSync(path.join(realDir, 'logs')));
     }
@@ -405,19 +404,19 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(finalStatus.status, 'completed');
     assert.equal(finalStatus.progress, 100);
     assert.equal(finalStatus.stats.filesCopied, 5);
-    assert.equal(configManager.getConfig().storagePath, destDir);
+    assert.equal(configManager.getConfig().storagePath, storageManager.canonicalPath(destDir));
   });
 
   test('16. POST /storage/merge and GET /storage/merge-status HTTP API endpoints', async () => {
-    const srcDir = path.join(TEST_BASE, 'api_merge_src');
-    const destDir = path.join(TEST_BASE, 'api_merge_dest');
-    fs.mkdirSync(path.join(srcDir, 'profiles/Default/images'), { recursive: true });
+    const curPath = configManager.getConfig().storagePath;
+    const destDir = path.join(configManager.DATA_DIR, 'api_merge_dest');
+    fs.mkdirSync(path.join(curPath, 'profiles/Default/images'), { recursive: true });
     fs.mkdirSync(destDir, { recursive: true });
 
-    fs.writeFileSync(path.join(srcDir, 'profiles/Default/images/api_test.png'), 'test_image');
+    fs.writeFileSync(path.join(curPath, 'profiles/Default/images/api_test.png'), 'test_image');
 
     const startRes = await invoke('POST', '/storage/merge', {
-      sourcePath: srcDir,
+      sourcePath: curPath,
       targetPath: destDir,
       switchOnComplete: true
     });
@@ -441,21 +440,12 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(pollRes.data.progress, 100);
   });
 
-  test('17. getAuthorizedPaths hides @appdata/novelai/data when NovelAI-WebUI app share exists', () => {
-    // Ensure NovelAI-WebUI share candidate is present
-    const webuiShareDir = path.join(TEST_BASE, 'shares/NovelAI-WebUI');
-    fs.mkdirSync(webuiShareDir, { recursive: true });
-    process.env.TRIM_DATA_SHARE_PATHS = webuiShareDir;
-
-    const res = storageManager.getAuthorizedPaths();
-    const types = res.paths.map(p => p.type);
-    const paths = res.paths.map(p => p.path);
-
-    // App share should be present
-    assert.ok(types.includes('app_share'));
-    // Internal appdata should NOT be present
-    assert.ok(!types.includes('appdata'), 'appdata type must be hidden when app_share exists');
-    assert.ok(!paths.some(p => p.includes(path.join(TEST_PKG_VAR, 'data'))), 'internal data path must not be in list');
+  test('17. assertStorageAdmin rejects non-admin users with 403', async () => {
+    const res = await invoke('POST', '/storage/switch', {
+      path: path.join(configManager.DATA_DIR, 'forbidden_switch')
+    }, { 'x-trim-isadmin': 'false' });
+    assert.equal(res.status, 403);
+    assert.match(res.data.error, /管理员/);
   });
 
   test('18. mergeStorageData detects symlinked alias to same realpath and finishes without locking', async () => {
@@ -503,48 +493,44 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.ok(!rels.some(r => r.startsWith('UnrelatedUserFolder')));
   });
 
-  test('20. getAuthorizedPaths discovers singular share mount directories and marks app_share', () => {
-    const singularShareDir = path.join(TEST_APP_DEST, 'share/NovelAI-WebUI');
-    fs.mkdirSync(singularShareDir, { recursive: true });
+  test('20. assertStorageAccess rejects path traversal attacks', async () => {
+    await assert.rejects(async () => {
+      await storageManager.assertStorageAccess({ headers: { 'x-trim-isadmin': 'true' } }, '../escape_dir');
+    }, /绝对路径/);
 
-    const res = storageManager.getAuthorizedPaths();
-    assert.ok(res.paths && Array.isArray(res.paths));
-    const realSingular = fs.realpathSync(singularShareDir);
-    const item = res.paths.find(p => p.path === realSingular);
-    assert.ok(item, 'Singular share path must be discovered');
-    assert.equal(item.type, 'app_share');
-    assert.match(item.name, /NovelAI-WebUI/);
+    await assert.rejects(async () => {
+      await storageManager.assertStorageAccess({ headers: { 'x-trim-isadmin': 'true' } }, '/tmp/null\0byte');
+    }, /绝对路径/);
   });
 
-  test('21. getAuthorizedPaths preserves custom currentCfg.storagePath in list even if not in standard mounts', () => {
-    const customStorage = path.join(TEST_BASE, 'custom_user_folder');
+  test('21. getAuthorizedPaths preserves custom currentCfg.storagePath in list', async () => {
+    const customStorage = path.join(configManager.DATA_DIR, 'custom_user_folder');
     fs.mkdirSync(customStorage, { recursive: true });
     configManager.updateConfig({ storagePath: customStorage });
 
-    const res = storageManager.getAuthorizedPaths();
-    const realCustom = fs.realpathSync(customStorage);
+    const res = await storageManager.getAuthorizedPaths();
+    const realCustom = storageManager.canonicalPath(customStorage);
     const item = res.paths.find(p => p.path === realCustom);
     assert.ok(item, 'Custom storage path must be included in authorized paths list');
     assert.equal(item.isCurrent, true);
   });
 
-  test('22. getAuthorizedPaths ignores non-directory files inside share directories', () => {
-    const dummyFile = path.join(TEST_APP_DEST, 'share/regular_file.txt');
-    fs.writeFileSync(dummyFile, 'hello text file');
-
-    const res = storageManager.getAuthorizedPaths();
-    assert.ok(res.paths && Array.isArray(res.paths));
-    const found = res.paths.find(p => p.path.endsWith('regular_file.txt'));
-    assert.strictEqual(found, undefined, 'Non-directory file must NOT be included in authorized paths');
+  test('22. assertStorageAccess rejects paths outside authorized roots with 403', async () => {
+    await assert.rejects(async () => {
+      await storageManager.assertStorageAccess(
+        { headers: { 'x-trim-isadmin': 'true' } },
+        '/var/unauthorized_private_nas_data'
+      );
+    }, /403|授权/);
   });
 
-  test('23. getAuthorizedPaths preserves non-existent currentCfg.storagePath with exists: false', () => {
-    const nonExistentPath = path.join(TEST_BASE, 'missing_subfolder/not_created_yet');
+  test('23. getAuthorizedPaths preserves non-existent currentCfg.storagePath with exists: false', async () => {
+    const nonExistentPath = path.join(configManager.DATA_DIR, 'missing_subfolder/not_created_yet');
     assert.equal(fs.existsSync(nonExistentPath), false);
     configManager.updateConfig({ storagePath: nonExistentPath });
 
-    const res = storageManager.getAuthorizedPaths();
-    const resolvedMissing = path.resolve(nonExistentPath);
+    const res = await storageManager.getAuthorizedPaths();
+    const resolvedMissing = storageManager.canonicalPath(nonExistentPath);
     const item = res.paths.find(p => p.path === resolvedMissing);
     assert.ok(item, 'Non-existent custom storage path must still be included in list');
     assert.equal(item.exists, false);
