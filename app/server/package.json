@@ -4,7 +4,8 @@
   "description": "NovelAI WebUI Native fnOS Backend Service",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js"
+    "start": "node app.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",

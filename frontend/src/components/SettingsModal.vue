@@ -2,13 +2,15 @@
 import { ref, watch, onMounted, computed } from 'vue';
 import { useAuthStore } from '../stores/auth';
 import { useProfileStore } from '../stores/profile';
+import { useGenerationStore } from '../stores/generation';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
 import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '../utils/mobilePerf';
+import { isInsideFnOS, pickSharedDirectory } from '../utils/fnosBridge';
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
   Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree,
-  SlidersHorizontal, FolderArchive
+  SlidersHorizontal, FolderArchive, RefreshCw, FolderPlus
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -122,6 +124,209 @@ const saveMessage = ref<{ success: boolean; message: string } | null>(null);
 // New profile input
 const newProfileName = ref('');
 
+// Storage directory management state
+interface AuthorizedPathItem {
+  path: string;
+  mountPath?: string | null;
+  name: string;
+  type: 'app_share' | 'share' | 'appdata' | 'custom';
+  exists: boolean;
+  writable: boolean;
+  reason?: string | null;
+  isCurrent?: boolean;
+}
+
+const authorizedPaths = ref<AuthorizedPathItem[]>([]);
+const isLoadingPaths = ref(false);
+const isManualMode = ref(false);
+const manualPathInput = ref('');
+const isValidatingPath = ref(false);
+const pathValidationResult = ref<{ success: boolean; message?: string; error?: string } | null>(null);
+const isSwitchingPath = ref(false);
+const isPickingDirectory = ref(false);
+const showAuthGuideModal = ref(false);
+const originalStoragePath = ref('');
+
+const currentPathInfo = computed(() => {
+  const current = storagePath.value?.trim();
+  if (!current) return null;
+  return authorizedPaths.value.find(p => p.path === current || p.mountPath === current) || null;
+});
+
+const isKnownPath = computed(() => {
+  return !!currentPathInfo.value;
+});
+
+const isStoragePathChanged = computed(() => {
+  if (!originalStoragePath.value || !storagePath.value) return false;
+  const current = storagePath.value.trim();
+  const orig = originalStoragePath.value.trim();
+  if (current === orig) return false;
+
+  const curInfo = authorizedPaths.value.find(p => p.path === current || p.mountPath === current);
+  const origInfo = authorizedPaths.value.find(p => p.path === orig || p.mountPath === orig);
+  if (curInfo && origInfo && curInfo.path === origInfo.path) {
+    return false;
+  }
+  return true;
+});
+
+const fetchAuthorizedPaths = async () => {
+  isLoadingPaths.value = true;
+  try {
+    const res = await encryptedAxios({
+      method: 'GET',
+      url: '/api/storage/authorized-paths'
+    });
+    if (res.data && res.data.success) {
+      authorizedPaths.value = res.data.paths || [];
+      const backendCurrent = res.data.currentPath;
+      // If current storagePath is empty, initialize from backend currentPath
+      if (!storagePath.value && backendCurrent) {
+        storagePath.value = backendCurrent;
+        originalStoragePath.value = backendCurrent;
+        manualPathInput.value = backendCurrent;
+      } else if (storagePath.value) {
+        // If current storagePath matches a known path's mountPath or realpath, align to canonical path
+        const matched = authorizedPaths.value.find(p => 
+          p.path === storagePath.value || 
+          p.mountPath === storagePath.value ||
+          (p.isCurrent && backendCurrent === p.path)
+        );
+        if (matched) {
+          storagePath.value = matched.path;
+          if (originalStoragePath.value === matched.mountPath || originalStoragePath.value === storagePath.value || !originalStoragePath.value) {
+            originalStoragePath.value = matched.path;
+          }
+          manualPathInput.value = matched.path;
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[SettingsModal] Failed to fetch authorized paths:', err.message);
+  } finally {
+    isLoadingPaths.value = false;
+  }
+};
+
+const handleSelectPath = (event: Event) => {
+  const targetVal = (event.target as HTMLSelectElement).value;
+  if (!targetVal) return;
+  if (targetVal === '__manual__') {
+    isManualMode.value = true;
+    manualPathInput.value = storagePath.value;
+    pathValidationResult.value = null;
+  } else {
+    storagePath.value = targetVal;
+    manualPathInput.value = targetVal;
+    pathValidationResult.value = null;
+  }
+};
+
+const handleApplyManualPath = async () => {
+  const target = manualPathInput.value.trim();
+  if (!target) return;
+  isValidatingPath.value = true;
+  pathValidationResult.value = null;
+  try {
+    const res = await encryptedAxios({
+      method: 'POST',
+      url: '/api/storage/validate-path',
+      data: { path: target }
+    });
+    if (res.data && res.data.success) {
+      storagePath.value = target;
+      isManualMode.value = false;
+      pathValidationResult.value = { success: true, message: '路径有效且具有读写权限' };
+      await fetchAuthorizedPaths();
+    } else {
+      pathValidationResult.value = { success: false, error: res.data?.error || '无读写权限' };
+    }
+  } catch (err: any) {
+    pathValidationResult.value = { success: false, error: err.response?.data?.error || err.message };
+  } finally {
+    isValidatingPath.value = false;
+  }
+};
+
+const executeSwitchPath = async (targetPath: string): Promise<boolean> => {
+  if (!targetPath || !targetPath.trim()) return false;
+  isSwitchingPath.value = true;
+  try {
+    const res = await encryptedAxios({
+      method: 'POST',
+      url: '/api/storage/switch',
+      data: { path: targetPath.trim() }
+    });
+    if (res.data && res.data.success) {
+      storagePath.value = res.data.storagePath || targetPath.trim();
+      originalStoragePath.value = storagePath.value;
+      manualPathInput.value = storagePath.value;
+      saveMessage.value = { success: true, message: '存储目录已成功切换并即时生效' };
+      await fetchAuthorizedPaths();
+      await profileStore.fetchProfiles();
+      const genStore = useGenerationStore();
+      genStore.cancelPendingSave();
+      genStore.isProfileDataLoaded = false;
+      await genStore.loadProfileData(profileStore.currentProfile);
+      setTimeout(() => {
+        saveMessage.value = null;
+      }, 3000);
+      return true;
+    } else {
+      alert(`切换存储目录失败: ${res.data?.error || '未知错误'}`);
+      return false;
+    }
+  } catch (err: any) {
+    alert(`切换存储目录失败: ${err.response?.data?.error || err.message}`);
+    return false;
+  } finally {
+    isSwitchingPath.value = false;
+  }
+};
+
+const handlePickOrAuthorize = async () => {
+  if (isInsideFnOS()) {
+    isPickingDirectory.value = true;
+    try {
+      const res = await pickSharedDirectory(30000);
+      if (res.supported && res.success && res.path) {
+        const picked = res.path.trim();
+        storagePath.value = picked;
+        manualPathInput.value = picked;
+        await executeSwitchPath(picked);
+        return;
+      } else if (res.canceled) {
+        return;
+      }
+    } catch (e) {
+      console.warn('[SettingsModal] Native picker call failed, fallback to guide modal:', e);
+    } finally {
+      isPickingDirectory.value = false;
+    }
+  }
+  showAuthGuideModal.value = true;
+};
+
+const handleRefreshAfterAuth = async () => {
+  const previousPaths = new Set(authorizedPaths.value.map(p => p.path));
+  await fetchAuthorizedPaths();
+  // Intelligently select newly added path if found
+  const newlyAdded = authorizedPaths.value.find(p => !previousPaths.has(p.path) && p.writable);
+  if (newlyAdded) {
+    storagePath.value = newlyAdded.path;
+    manualPathInput.value = newlyAdded.path;
+  } else if (!currentPathInfo.value || !currentPathInfo.value.writable) {
+    const valid = authorizedPaths.value.find(p => p.writable && p.type === 'share') ||
+                  authorizedPaths.value.find(p => p.writable);
+    if (valid) {
+      storagePath.value = valid.path;
+      manualPathInput.value = valid.path;
+    }
+  }
+  showAuthGuideModal.value = false;
+};
+
 // Load settings from backend
 const loadSettings = async () => {
   try {
@@ -134,6 +339,8 @@ const loadSettings = async () => {
       apiToken.value = s.apiToken || authStore.token || '';
       apiBaseUrl.value = s.apiBaseUrl || 'https://image.novelai.net';
       storagePath.value = s.storagePath || './data';
+      originalStoragePath.value = s.storagePath || './data';
+      manualPathInput.value = s.storagePath || './data';
       imageSubdirPattern.value = s.imageSubdirPattern || '/{year}/{month}/';
       enableEncryption.value = !!s.enableEncryption;
       encryptionKey.value = s.encryptionKey || 'nahida1027';
@@ -142,6 +349,8 @@ const loadSettings = async () => {
     }
   } catch (err: any) {
     console.warn('[SettingsModal] Failed to load settings:', err.message);
+  } finally {
+    await fetchAuthorizedPaths();
   }
 };
 
@@ -232,6 +441,18 @@ const handleSaveSettings = async () => {
   isSaving.value = true;
   saveMessage.value = null;
   try {
+    if (isManualMode.value && manualPathInput.value.trim()) {
+      storagePath.value = manualPathInput.value.trim();
+    }
+    const newStorage = storagePath.value.trim();
+    if (newStorage && isStoragePathChanged.value) {
+      const switched = await executeSwitchPath(newStorage);
+      if (!switched) {
+        isSaving.value = false;
+        return;
+      }
+    }
+
     const payload = {
       apiToken: apiToken.value.trim(),
       apiBaseUrl: apiBaseUrl.value.trim(),
@@ -434,19 +655,168 @@ const handleDeleteProfile = async (name: string) => {
             </p>
           </div>
 
-          <!-- NAS 本地存储路径 -->
-          <div class="space-y-1.5 sm:space-y-2">
-            <label class="block font-medium text-gray-700 dark:text-gray-300">
-              数据存储路径
-            </label>
-            <input 
-              type="text"
-              v-model="storagePath"
-              placeholder="./data"
-              class="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors font-mono text-xs"
-            />
-            <p class="text-xs text-gray-400 leading-relaxed">
-              系统配置、各存档的索引数据及生成的图片文件将保存在该路径下的 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-gray-700 dark:text-gray-300">profiles/</code> 目录中。
+          <!-- NAS 本地存储路径与可视化授权 (Scheme A + Scheme B) -->
+          <div class="space-y-2 p-3 sm:p-4 rounded-xl bg-gray-50/70 dark:bg-gray-800/40 border border-gray-200/80 dark:border-gray-700/60">
+            <!-- Header with Title & Action Buttons -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <label class="block font-medium text-gray-800 dark:text-gray-200 text-xs sm:text-sm">
+                  数据存储目录
+                </label>
+                <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400">
+                  用于持久化保存生图历史、角色库及 SQLite 存档数据库
+                </p>
+              </div>
+
+              <!-- Action buttons group -->
+              <div class="flex items-center gap-1.5 self-start sm:self-auto shrink-0">
+                <button
+                  type="button"
+                  @click="fetchAuthorizedPaths"
+                  :disabled="isLoadingPaths"
+                  class="px-2.5 py-1.5 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-700 dark:text-gray-300 font-medium text-xs flex items-center gap-1 transition shadow-sm cursor-pointer"
+                  title="重新扫描已授权目录"
+                >
+                  <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoadingPaths }" />
+                  <span>刷新</span>
+                </button>
+                <button
+                  type="button"
+                  @click="handlePickOrAuthorize"
+                  :disabled="isPickingDirectory"
+                  class="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/50 border border-blue-200 dark:border-blue-700/50 rounded-lg text-blue-700 dark:text-blue-300 font-medium text-xs flex items-center gap-1 transition shadow-sm cursor-pointer"
+                  title="使用飞牛原生选择器或打开授权向导"
+                >
+                  <Loader2 v-if="isPickingDirectory" class="w-3.5 h-3.5 animate-spin" />
+                  <FolderPlus v-else class="w-3.5 h-3.5" />
+                  <span>{{ isPickingDirectory ? '正在呼出选择器...' : '+ 授权/选择新目录' }}</span>
+                </button>
+                <button
+                  type="button"
+                  @click="isManualMode = !isManualMode"
+                  class="px-2 py-1.5 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-lg text-xs flex items-center gap-1 transition cursor-pointer"
+                  :title="isManualMode ? '切换为下拉选择' : '手动输入绝对路径'"
+                >
+                  <Edit3 class="w-3.5 h-3.5" />
+                  <span>{{ isManualMode ? '下拉模式' : '手动输入' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Hint if picking takes time in desktop -->
+            <div v-if="isPickingDirectory" class="px-2.5 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs flex items-center justify-between text-blue-700 dark:text-blue-300">
+              <span class="flex items-center gap-1.5">
+                <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                正在等待飞牛桌面选择文件夹...
+              </span>
+              <button 
+                type="button" 
+                @click="isPickingDirectory = false; showAuthGuideModal = true" 
+                class="underline hover:text-blue-800 dark:hover:text-blue-200 cursor-pointer"
+              >
+                未弹出？打开向导
+              </button>
+            </div>
+
+            <!-- Mode 1: Dropdown Mode (Default) -->
+            <div v-if="!isManualMode" class="space-y-2 pt-1">
+              <div class="relative">
+                <select
+                  :value="storagePath"
+                  @change="handleSelectPath"
+                  class="w-full px-3.5 py-2.5 bg-white dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors shadow-sm cursor-pointer font-sans"
+                >
+                  <option v-if="isLoadingPaths" disabled value="">
+                    ⏳ 正在扫描可用存储目录...
+                  </option>
+                  <option v-else-if="authorizedPaths.length === 0" disabled value="">
+                    暂无已授权目录，请点击上方“+ 授权/选择新目录”
+                  </option>
+                  <option v-if="!isKnownPath && storagePath" :value="storagePath">
+                    📂 当前已选: {{ storagePath }}
+                  </option>
+                  <option
+                    v-for="item in authorizedPaths"
+                    :key="item.path"
+                    :value="item.path"
+                  >
+                    {{ item.name }} {{ item.writable ? '(✓ 读写正常)' : (!item.exists ? '(❌ 目录不存在)' : '(⚠️ 无写权限)') }}
+                  </option>
+                  <option value="__manual__">
+                    ✏️ 手动输入其他路径...
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Mode 2: Manual Path Input Mode -->
+            <div v-else class="space-y-2 pt-1">
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  v-model="manualPathInput"
+                  placeholder="/vol1/shares/NovelAI-WebUI"
+                  class="flex-1 min-w-0 px-3.5 py-2.5 bg-white dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors font-mono text-xs sm:text-sm shadow-sm"
+                />
+                <button
+                  type="button"
+                  @click="handleApplyManualPath"
+                  :disabled="isValidatingPath || !manualPathInput.trim()"
+                  class="px-3 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0 text-xs whitespace-nowrap cursor-pointer"
+                >
+                  <Loader2 v-if="isValidatingPath" class="w-3.5 h-3.5 animate-spin" />
+                  <span v-else>验证并采纳</span>
+                </button>
+              </div>
+              <p v-if="pathValidationResult" class="text-xs flex items-center gap-1.5" :class="pathValidationResult.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'">
+                <Check v-if="pathValidationResult.success" class="w-3.5 h-3.5 shrink-0" />
+                <AlertCircle v-else class="w-3.5 h-3.5 shrink-0" />
+                <span>{{ pathValidationResult.message || pathValidationResult.error }}</span>
+              </p>
+            </div>
+
+            <!-- Status Indicator -->
+            <div class="pt-0.5">
+              <div v-if="currentPathInfo" class="text-xs">
+                <div v-if="currentPathInfo.writable" class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                  <Check class="w-3.5 h-3.5 shrink-0" />
+                  <span>读写权限正常 (已获得飞牛授权，可安全存放图库与数据)</span>
+                </div>
+                <div v-else class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-2 rounded-lg">
+                  <div class="flex items-center gap-1.5 min-w-0">
+                    <AlertCircle class="w-3.5 h-3.5 shrink-0" />
+                    <span class="truncate">{{ currentPathInfo.reason || '飞牛未授予读写权限，无法保存图片与数据' }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    @click="showAuthGuideModal = true"
+                    class="underline font-medium hover:text-amber-700 dark:hover:text-amber-300 shrink-0 text-left cursor-pointer"
+                  >
+                    查看授权指引
+                  </button>
+                </div>
+              </div>
+
+              <!-- Quick Switch button when selected differs from active config -->
+              <div v-if="isStoragePathChanged" class="mt-2 flex items-center justify-between bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 p-2.5 rounded-lg text-xs">
+                <span class="text-blue-700 dark:text-blue-300">
+                  检测到存储目录已更改，保存设置或点击右侧立即应用切换。
+                </span>
+                <button
+                  type="button"
+                  @click="executeSwitchPath(storagePath)"
+                  :disabled="isSwitchingPath"
+                  class="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-medium text-xs flex items-center gap-1 transition shadow-sm shrink-0 cursor-pointer"
+                >
+                  <Loader2 v-if="isSwitchingPath" class="w-3 h-3 animate-spin" />
+                  <span>立即切换</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Path explanation -->
+            <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 leading-relaxed pt-1">
+              当前配置路径：<code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono text-gray-700 dark:text-gray-300 select-all">{{ storagePath }}</code>。系统存档将存放在此路径的 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-gray-700 dark:text-gray-300">profiles/</code> 文件夹中。
             </p>
           </div>
 
@@ -729,6 +1099,86 @@ const handleDeleteProfile = async (name: string) => {
         </div>
       </div>
 
+    </div>
+
+    <!-- 飞牛存储授权向导弹窗 (Scheme B 降级指引) -->
+    <div 
+      v-if="showAuthGuideModal" 
+      class="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fade-in"
+    >
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col space-y-4">
+        <div class="flex items-center justify-between pb-3 border-b border-gray-200 dark:border-gray-800">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+              <FolderTree class="w-4 h-4" />
+            </div>
+            <div>
+              <h4 class="font-bold text-gray-900 dark:text-white text-sm sm:text-base leading-tight">飞牛存储授权向导</h4>
+              <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400">为应用授予 NAS 共享文件夹读写权限</p>
+            </div>
+          </div>
+          <button 
+            type="button"
+            @click="showAuthGuideModal = false"
+            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition cursor-pointer"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <!-- 3-Step Guide -->
+        <div class="space-y-3.5 text-xs sm:text-sm">
+          <div class="flex gap-3 items-start bg-gray-50 dark:bg-gray-950 p-3 rounded-xl border border-gray-200 dark:border-gray-800">
+            <span class="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">1</span>
+            <div class="space-y-0.5">
+              <div class="font-semibold text-gray-900 dark:text-gray-100">打开飞牛应用设置</div>
+              <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                在飞牛 OS 桌面中打开【应用中心】 -> 【已安装】，找到【NovelAI WebUI】图标，点击其右上角的【设置】按钮。
+              </div>
+            </div>
+          </div>
+
+          <div class="flex gap-3 items-start bg-gray-50 dark:bg-gray-950 p-3 rounded-xl border border-gray-200 dark:border-gray-800">
+            <span class="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">2</span>
+            <div class="space-y-0.5">
+              <div class="font-semibold text-gray-900 dark:text-gray-100">添加共享文件夹访问权限</div>
+              <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                切换到【访问权限】标签页，点击【+ 添加】，勾选您希望存放图片和数据的 NAS 共享文件夹，并将权限勾选为【读写】。
+              </div>
+            </div>
+          </div>
+
+          <div class="flex gap-3 items-start bg-gray-50 dark:bg-gray-950 p-3 rounded-xl border border-gray-200 dark:border-gray-800">
+            <span class="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">3</span>
+            <div class="space-y-0.5">
+              <div class="font-semibold text-gray-900 dark:text-gray-100">刷新授权即可直接选用</div>
+              <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                完成授权后返回此处，点击下方按钮，系统将自动识别新增的文件夹并立即列入下拉列表。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex flex-col sm:flex-row items-center justify-end gap-2 pt-2 border-t border-gray-200 dark:border-gray-800">
+          <button
+            type="button"
+            @click="isManualMode = true; showAuthGuideModal = false;"
+            class="w-full sm:w-auto px-3.5 py-2 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition cursor-pointer"
+          >
+            我知道绝对路径，手动输入
+          </button>
+          <button
+            type="button"
+            @click="handleRefreshAfterAuth"
+            :disabled="isLoadingPaths"
+            class="w-full sm:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium text-xs flex items-center justify-center gap-1.5 transition shadow-sm cursor-pointer"
+          >
+            <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoadingPaths }" />
+            <span>我已完成授权，立即刷新</span>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>

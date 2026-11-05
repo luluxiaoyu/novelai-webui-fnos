@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
 const axios = require('axios');
 const { getConfig, updateConfig, DEFAULT_IMAGE_SUBDIR_PATTERN } = require('./configManager');
 const { queueManager } = require('./queueManager');
 const profileManager = require('./profileManager');
 const proxyClient = require('./proxyClient');
+const storageManager = require('./storageManager');
 
 // ==================== Settings & Auth Status ====================
 
@@ -30,7 +32,17 @@ router.get('/settings', (req, res) => {
 
 router.post('/settings', (req, res) => {
   try {
-    const updated = updateConfig(req.body || {});
+    const body = req.body || {};
+    if (body.storagePath) {
+      const current = getConfig();
+      const curResolved = path.resolve(current.storagePath || '');
+      const newResolved = path.resolve(body.storagePath);
+      if (curResolved !== newResolved || current.storagePath !== body.storagePath) {
+        const switchRes = storageManager.switchStoragePath(body.storagePath);
+        body.storagePath = switchRes.storagePath;
+      }
+    }
+    const updated = updateConfig(body);
     res.json({
       success: true,
       message: '设置已成功保存',
@@ -54,6 +66,15 @@ router.get('/config', (req, res) => {
 router.post('/config', (req, res) => {
   try {
     const data = req.body?.config || req.body || {};
+    if (data.storagePath) {
+      const current = getConfig();
+      const curResolved = path.resolve(current.storagePath || '');
+      const newResolved = path.resolve(data.storagePath);
+      if (curResolved !== newResolved || current.storagePath !== data.storagePath) {
+        const switchRes = storageManager.switchStoragePath(data.storagePath);
+        data.storagePath = switchRes.storagePath;
+      }
+    }
     const updated = updateConfig(data);
     res.json({
       success: true,
@@ -133,6 +154,67 @@ router.post('/auth/verify-access', (req, res) => {
     siteUnlocked: true,
     allowPaid: true
   });
+});
+
+// ==================== Storage Directory Management ====================
+
+// List authorized storage paths & check write status
+router.get('/storage/authorized-paths', (req, res) => {
+  try {
+    const data = storageManager.getAuthorizedPaths();
+    res.json({ success: true, ...data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || '获取已授权目录列表失败' });
+  }
+});
+
+// Test whether a candidate path is writable
+router.post('/storage/validate-path', (req, res) => {
+  try {
+    const { path: targetPath, createIfMissing } = req.body || {};
+    if (!targetPath || typeof targetPath !== 'string' || !targetPath.trim()) {
+      return res.status(400).json({ success: false, error: '请提供待验证的存储路径' });
+    }
+    const result = storageManager.validatePath(targetPath, !!createIfMissing);
+    if (result.writable) {
+      return res.json({
+        success: true,
+        path: targetPath.trim(),
+        exists: result.exists,
+        writable: true,
+        message: '路径有效且具有读写权限'
+      });
+    } else {
+      return res.json({
+        success: false,
+        path: targetPath.trim(),
+        exists: result.exists,
+        writable: false,
+        error: result.reason || '指定路径无读写权限'
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || '路径验证失败' });
+  }
+});
+
+// Safely switch storage path, ensuring profiles/ exists and flushing DB cache
+router.post('/storage/switch', (req, res) => {
+  try {
+    const { path: targetPath } = req.body || {};
+    if (!targetPath || typeof targetPath !== 'string' || !targetPath.trim()) {
+      return res.status(400).json({ success: false, error: '请提供目标存储路径' });
+    }
+    const result = storageManager.switchStoragePath(targetPath);
+    res.json({
+      success: true,
+      message: '存储目录已成功切换并即时生效',
+      storagePath: result.storagePath,
+      config: result.config
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message || '切换存储路径失败' });
+  }
 });
 
 // ==================== Queue Status ====================
