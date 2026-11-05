@@ -90,35 +90,34 @@ export async function openFnOSFile(filePath: string): Promise<{ success: boolean
   if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统桌面端内支持直接打开文件' };
   try {
     const app = await ready();
-    try {
-      await app.openFile(filePath);
-      return { success: true };
-    } catch {
-      await app.openFileManager(filePath);
-      return { success: true };
-    }
+    await app.openFile(filePath);
+    return { success: true };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : '打开文件失败' };
   }
 }
 
-export async function openNasImageInHost(profile: string, item: { url?: string; id?: string }): Promise<{ success: boolean; message?: string }> {
+export async function getNasImageDiskPath(profile: string, item: { url?: string; id?: string }): Promise<string> {
   if (!item || (!item.url && !item.id)) {
-    return { success: false, message: '无效的图片标识' };
+    throw new Error('无效的图片标识');
   }
+  const targetUrl = resolveApiUrl(`/api/profiles/images/disk-path?profile=${encodeURIComponent(profile || 'Default')}&url=${encodeURIComponent(item.url || '')}&id=${encodeURIComponent(item.id || '')}`);
+  const res = await fetch(targetUrl);
+  if (!res.ok) {
+    let err = '未找到该图片在 NAS 上的持久化文件';
+    try { const j = await res.json(); if (j.error) err = j.error; } catch {}
+    throw new Error(err);
+  }
+  const data = await res.json();
+  if (!data.success || !data.path) {
+    throw new Error(data.error || '未获取到磁盘路径');
+  }
+  return data.path as string;
+}
+
+export async function openNasImageFile(profile: string, item: { url?: string; id?: string }): Promise<{ success: boolean; message?: string }> {
   try {
-    const targetUrl = resolveApiUrl(`/api/profiles/images/disk-path?profile=${encodeURIComponent(profile || 'Default')}&url=${encodeURIComponent(item.url || '')}&id=${encodeURIComponent(item.id || '')}`);
-    const res = await fetch(targetUrl);
-    if (!res.ok) {
-      let err = '未找到该图片在 NAS 上的持久化文件';
-      try { const j = await res.json(); if (j.error) err = j.error; } catch {}
-      return { success: false, message: err };
-    }
-    const data = await res.json();
-    if (!data.success || !data.path) {
-      return { success: false, message: data.error || '未获取到磁盘路径' };
-    }
-    const diskPath = data.path as string;
+    const diskPath = await getNasImageDiskPath(profile, item);
     if (!isInsideFnOS()) {
       try {
         await navigator.clipboard.writeText(diskPath);
@@ -131,11 +130,38 @@ export async function openNasImageInHost(profile: string, item: { url?: string; 
     if (!openRes.success) {
       return { success: false, message: openRes.error || '打开文件失败' };
     }
-    return { success: true, message: '已在 NAS 中打开图片' };
+    return { success: true, message: '已在 NAS 中打开图片文件' };
   } catch (err: any) {
     return { success: false, message: err.message || '打开文件失败' };
   }
 }
+
+export async function openNasImageFolder(profile: string, item: { url?: string; id?: string }): Promise<{ success: boolean; message?: string }> {
+  try {
+    const diskPath = await getNasImageDiskPath(profile, item);
+    const folderPath = diskPath.includes('/') ? diskPath.substring(0, diskPath.lastIndexOf('/')) : diskPath;
+    if (!isInsideFnOS()) {
+      try {
+        await navigator.clipboard.writeText(folderPath);
+        return { success: true, message: `已复制 NAS 所在文件夹路径到剪贴板: ${folderPath}` };
+      } catch {
+        return { success: false, message: `NAS 文件夹路径: ${folderPath}` };
+      }
+    }
+    let openRes = await openFnOSFileManager(diskPath);
+    if (!openRes.success) {
+      openRes = await openFnOSFileManager(folderPath);
+    }
+    if (!openRes.success) {
+      return { success: false, message: openRes.error || '打开文件管理器失败' };
+    }
+    return { success: true, message: '已在文件管理器中定位' };
+  } catch (err: any) {
+    return { success: false, message: err.message || '定位文件夹失败' };
+  }
+}
+
+export const openNasImageInHost = openNasImageFile;
 
 export async function pickNasImage(): Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }> {
   if (!isInsideFnOS()) return { success: false, error: '请在飞牛系统桌面端内使用此功能' };
