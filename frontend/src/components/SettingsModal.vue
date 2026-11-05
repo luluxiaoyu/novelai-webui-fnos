@@ -7,7 +7,8 @@ import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '..
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
-  Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree
+  Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree,
+  SlidersHorizontal, FolderArchive
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -302,18 +303,18 @@ const handleDeleteProfile = async (name: string) => {
 </script>
 
 <template>
-  <div v-if="modelValue" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+  <div v-if="modelValue" class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-2xl max-h-[92vh] sm:max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
       
       <!-- Modal Header -->
-      <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between bg-gray-50/80 dark:bg-gray-900">
-        <div class="flex items-center gap-2.5">
-          <div class="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+      <div class="px-4 py-3 sm:px-6 sm:py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between bg-gray-50/80 dark:bg-gray-900">
+        <div class="flex items-center gap-2 sm:gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
             <Globe class="w-4 h-4" />
           </div>
           <div>
-            <h3 class="font-bold text-gray-900 dark:text-white text-base">NovelAI WebUI 设置</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">服务连接与存储配置</p>
+            <h3 class="font-bold text-gray-900 dark:text-white text-sm sm:text-base leading-tight">NovelAI WebUI 设置</h3>
+            <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 leading-tight">服务连接与存储配置</p>
           </div>
         </div>
         <button 
@@ -324,58 +325,62 @@ const handleDeleteProfile = async (name: string) => {
         </button>
       </div>
 
-      <!-- Navigation Tabs -->
-      <div class="flex border-b border-gray-200 dark:border-gray-800 px-6 gap-6 bg-gray-50/40 dark:bg-gray-900/60 text-sm">
+      <!-- Navigation Tabs (现代化响应式平滑横向滚动与防折行) -->
+      <div class="flex border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 gap-1.5 sm:gap-6 bg-gray-50/50 dark:bg-gray-900/60 overflow-x-auto scrollbar-none overscroll-x-contain select-none">
         <button 
           @click="activeTab = 'general'"
-          class="py-3 font-medium transition relative"
-          :class="activeTab === 'general' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
+          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
+          :class="activeTab === 'general' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
         >
-          常规设置
+          <SlidersHorizontal class="w-3.5 h-3.5 shrink-0" />
+          <span>常规设置</span>
         </button>
         <button 
           @click="activeTab = 'profiles'"
-          class="py-3 font-medium transition relative"
-          :class="activeTab === 'profiles' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
+          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
+          :class="activeTab === 'profiles' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
         >
-          存档管理
+          <FolderArchive class="w-3.5 h-3.5 shrink-0" />
+          <span>存档管理</span>
         </button>
         <button 
           @click="activeTab = 'security'"
-          class="py-3 font-medium transition relative"
-          :class="activeTab === 'security' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
+          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
+          :class="activeTab === 'security' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
         >
-          安全传输
+          <ShieldCheck class="w-3.5 h-3.5 shrink-0" />
+          <span>安全传输</span>
         </button>
         <button 
           @click="activeTab = 'performance'"
-          class="py-3 font-medium transition relative"
-          :class="activeTab === 'performance' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
+          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
+          :class="activeTab === 'performance' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
         >
-          任务与日志
+          <FileText class="w-3.5 h-3.5 shrink-0" />
+          <span>任务与日志</span>
         </button>
       </div>
 
       <!-- Tab Content Area -->
-      <div class="p-6 overflow-y-auto space-y-6 flex-1 text-sm bg-white dark:bg-gray-900">
+      <div class="p-4 sm:p-6 overflow-y-auto space-y-5 sm:space-y-6 flex-1 text-xs sm:text-sm bg-white dark:bg-gray-900">
         
         <!-- Tab 1: 常规设置 -->
         <div v-if="activeTab === 'general'" class="space-y-5 animate-fade-in">
           <!-- API Token -->
-          <div class="space-y-2">
-            <div class="flex items-center justify-between">
+          <div class="space-y-1.5 sm:space-y-2">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-2">
               <label class="block font-medium text-gray-700 dark:text-gray-300">
                 NovelAI API Token
               </label>
-              <span class="text-xs text-gray-400">保存在本地 NAS，同网络各终端免重复配置</span>
+              <span class="text-xs text-gray-400 leading-tight">保存在本地 NAS，同网络各终端免重复配置</span>
             </div>
             <div class="flex gap-2">
-              <div class="relative flex-1">
+              <div class="relative flex-1 min-w-0">
                 <input 
                   :type="showToken ? 'text' : 'password'"
                   v-model="apiToken"
                   placeholder="请输入 API 访问令牌 (pst-...)"
-                  class="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl pr-10 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                  class="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl pr-10 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors text-xs sm:text-sm"
                 />
                 <button 
                   type="button"
@@ -390,7 +395,7 @@ const handleDeleteProfile = async (name: string) => {
                 type="button"
                 @click="handleTestToken"
                 :disabled="isTestingToken"
-                class="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0"
+                class="px-3 sm:px-4 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0 text-xs sm:text-sm whitespace-nowrap"
               >
                 <Loader2 v-if="isTestingToken" class="w-4 h-4 animate-spin" />
                 <span v-else>验证连接</span>
@@ -404,25 +409,25 @@ const handleDeleteProfile = async (name: string) => {
           </div>
 
           <!-- API 接口地址 -->
-          <div class="space-y-2">
-            <div class="flex items-center justify-between">
+          <div class="space-y-1.5 sm:space-y-2">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-2">
               <label class="block font-medium text-gray-700 dark:text-gray-300">
                 API 接口地址
               </label>
-              <span class="text-xs text-gray-400">默认使用官方接口</span>
+              <span class="text-xs text-gray-400 leading-tight">默认使用官方接口</span>
             </div>
             <div class="flex gap-2">
               <input 
                 type="text"
                 v-model="apiBaseUrl"
                 placeholder="https://image.novelai.net"
-                class="flex-1 px-3.5 py-2.5 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                class="flex-1 min-w-0 px-3.5 py-2.5 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors text-xs sm:text-sm"
               />
               <button 
                 type="button"
                 @click="handleTestUrl"
                 :disabled="isTestingUrl"
-                class="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0"
+                class="px-3 sm:px-4 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0 text-xs sm:text-sm whitespace-nowrap"
               >
                 <Loader2 v-if="isTestingUrl" class="w-4 h-4 animate-spin" />
                 <span v-else>测速</span>
@@ -439,7 +444,7 @@ const handleDeleteProfile = async (name: string) => {
           </div>
 
           <!-- NAS 本地存储路径 -->
-          <div class="space-y-2">
+          <div class="space-y-1.5 sm:space-y-2">
             <label class="block font-medium text-gray-700 dark:text-gray-300">
               数据存储路径
             </label>
@@ -455,15 +460,15 @@ const handleDeleteProfile = async (name: string) => {
           </div>
 
           <!-- 存档图片保存子目录结构 -->
-          <div class="space-y-2.5">
-            <div class="flex items-center justify-between">
+          <div class="space-y-2 sm:space-y-2.5">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-2">
               <label class="block font-medium text-gray-700 dark:text-gray-300">
                 图片存档子目录规则
               </label>
               <button 
                 type="button" 
                 @click="imageSubdirPattern = '/{year}/{month}/'"
-                class="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                class="text-xs text-blue-600 dark:text-blue-400 hover:underline self-start sm:self-auto"
               >
                 恢复默认 (/{year}/{month}/)
               </button>
@@ -576,22 +581,22 @@ const handleDeleteProfile = async (name: string) => {
               <div 
                 v-for="p in profileStore.profiles" 
                 :key="p"
-                class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800/50 transition"
+                class="px-3.5 sm:px-4 py-3 flex items-center justify-between gap-2 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition"
               >
-                <div class="flex items-center gap-2.5">
+                <div class="flex items-center gap-2 sm:gap-2.5 min-w-0">
                   <div 
-                    class="w-2.5 h-2.5 rounded-full"
+                    class="w-2.5 h-2.5 rounded-full shrink-0"
                     :class="profileStore.currentProfile === p ? 'bg-emerald-500 ring-4 ring-emerald-500/20' : 'bg-gray-300 dark:bg-gray-600'"
                   ></div>
-                  <span class="font-medium text-gray-800 dark:text-gray-200 text-sm">{{ p }}</span>
-                  <span v-if="profileStore.currentProfile === p" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 font-semibold">
+                  <span class="font-medium text-gray-800 dark:text-gray-200 text-xs sm:text-sm truncate max-w-[110px] sm:max-w-xs">{{ p }}</span>
+                  <span v-if="profileStore.currentProfile === p" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 font-semibold shrink-0">
                     使用中
                   </span>
-                  <span v-if="p === 'Default'" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                    默认存档
+                  <span v-if="p === 'Default'" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 shrink-0">
+                    默认
                   </span>
                 </div>
-                <div class="flex items-center gap-1.5">
+                <div class="flex items-center gap-1 sm:gap-1.5 shrink-0">
                   <button 
                     v-if="profileStore.currentProfile !== p"
                     @click="profileStore.switchProfile(p)"
@@ -704,19 +709,19 @@ const handleDeleteProfile = async (name: string) => {
       </div>
 
       <!-- Modal Footer -->
-      <div class="px-6 py-4 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between bg-gray-50/80 dark:bg-gray-900">
-        <div>
-          <span v-if="saveMessage" class="text-xs font-medium flex items-center gap-1.5" :class="saveMessage.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'">
-            <Check v-if="saveMessage.success" class="w-3.5 h-3.5" />
-            <AlertCircle v-else class="w-3.5 h-3.5" />
-            <span>{{ saveMessage.message }}</span>
+      <div class="px-4 py-3 sm:px-6 sm:py-4 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between gap-2 bg-gray-50/80 dark:bg-gray-900">
+        <div class="min-w-0 flex-1">
+          <span v-if="saveMessage" class="text-xs font-medium flex items-center gap-1.5 truncate" :class="saveMessage.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'">
+            <Check v-if="saveMessage.success" class="w-3.5 h-3.5 shrink-0" />
+            <AlertCircle v-else class="w-3.5 h-3.5 shrink-0" />
+            <span class="truncate">{{ saveMessage.message }}</span>
           </span>
         </div>
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2 shrink-0">
           <button 
             type="button"
             @click="emit('update:modelValue', false)"
-            class="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition"
+            class="px-3.5 sm:px-4 py-2 text-xs sm:text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition"
           >
             关闭
           </button>
@@ -724,10 +729,10 @@ const handleDeleteProfile = async (name: string) => {
             type="button"
             @click="handleSaveSettings"
             :disabled="isSaving"
-            class="px-5 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-xl transition flex items-center gap-2 shadow-sm"
+            class="px-4 sm:px-5 py-2 text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-xl transition flex items-center gap-1.5 sm:gap-2 shadow-sm whitespace-nowrap"
           >
-            <Loader2 v-if="isSaving" class="w-4 h-4 animate-spin" />
-            <Save v-else class="w-4 h-4" />
+            <Loader2 v-if="isSaving" class="w-4 h-4 animate-spin shrink-0" />
+            <Save v-else class="w-4 h-4 shrink-0" />
             <span>保存配置</span>
           </button>
         </div>
