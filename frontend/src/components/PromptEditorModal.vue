@@ -510,7 +510,7 @@ const handleCopy = async (text: string, type: string) => {
       <!-- 弹窗底部操作栏 (固定吸附在底部) -->
       <div class="px-5 py-3.5 border-t border-gray-100 dark:border-gray-800 bg-gray-50/80 dark:bg-gray-950/80 flex items-center justify-between shrink-0 gap-3">
         <p class="text-[11px] text-gray-400 hidden sm:block">
-          💡 修改完成后，点击「确定并回填」即可同步更新至左侧主控制面板
+          修改完成后，点击「确定并回填」即可同步更新至左侧主控制面板
         </p>
 
         <div class="flex items-center gap-2.5 ml-auto w-full sm:w-auto justify-end">

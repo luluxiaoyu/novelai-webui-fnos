@@ -19,6 +19,12 @@ function getDetectedShareDir() {
   if (fs.existsSync(appDestShareWebUI)) {
     return appDestShareWebUI;
   }
+  for (let vol = 1; vol <= 5; vol++) {
+    const volPath = `/vol${vol}/@appshare/NovelAI-WebUI`;
+    if (fs.existsSync(volPath)) {
+      return volPath;
+    }
+  }
   if (fs.existsSync('/var/apps/novelai/shares/NovelAI')) {
     return '/var/apps/novelai/shares/NovelAI';
   }
@@ -82,10 +88,17 @@ function loadConfig() {
 
       // If user-facing share directory is available or invalid path, fallback to DATA_DIR
       const currentShare = getDetectedShareDir();
+      const internalVarData = path.join(PKG_VAR, 'data');
       if (
         !cachedConfig.storagePath ||
         cachedConfig.storagePath.startsWith('/tmp/') ||
         cachedConfig.storagePath.includes('/var/apps/novelai/var/data') ||
+        (currentShare && (
+          path.resolve(cachedConfig.storagePath) === path.resolve(internalVarData) ||
+          cachedConfig.storagePath === './data' ||
+          cachedConfig.storagePath.endsWith('/var/data') ||
+          cachedConfig.storagePath.includes('@appdata')
+        )) ||
         (!fs.existsSync(cachedConfig.storagePath) && (currentShare || DATA_DIR))
       ) {
         cachedConfig.storagePath = currentShare || DATA_DIR;

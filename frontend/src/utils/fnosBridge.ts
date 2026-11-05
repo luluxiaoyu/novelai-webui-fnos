@@ -8,11 +8,31 @@ export interface FnosPickResult {
   error?: string;
 }
 
+export interface FnosAppSettingResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface FnosAppAuthRouteResult {
+  success: boolean;
+  url?: string;
+  error?: string;
+}
+
+export interface FnosAppAuthCallbackResult {
+  hasCallback: boolean;
+  status?: 'success' | 'cancel' | 'error';
+  path?: string;
+  method?: string;
+  appName?: string;
+  error?: string;
+}
+
 let trimAppInstance: TrimApp | null = null;
 
 export function getTrimApp(): TrimApp {
   if (!trimAppInstance) {
-    trimAppInstance = new TrimApp();
+    trimAppInstance = new TrimApp({ debug: true });
   }
   return trimAppInstance;
 }
@@ -32,9 +52,23 @@ export function isInsideFnOS(): boolean {
 }
 
 /**
- * Invoke native fnOS shared directory picker using the official @trimjs/web-app SDK.
+ * Wrap a promise with a bounded timeout to prevent hanging on unresponsive host bridge calls.
  */
-export async function pickSharedDirectory(): Promise<FnosPickResult> {
+function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMsg: string): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutMsg)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
+ * Invoke native fnOS shared directory picker using the official @trimjs/web-app SDK.
+ * Bounded by a timeout to prevent hanging when host does not respond to Postmate.
+ */
+export async function pickSharedDirectory(timeoutMs = 2000): Promise<FnosPickResult> {
   const app = getTrimApp();
 
   if (!isInsideFnOS()) {
@@ -46,10 +80,14 @@ export async function pickSharedDirectory(): Promise<FnosPickResult> {
   }
 
   try {
-    // 1. Try pickSharedFile first (Application Shared Folder authorization)
-    const res = await app.pickSharedFile({
-      title: '选择共享文件夹'
-    });
+    // 1. Try pickSharedFile first (Application Shared Folder authorization) with bounded timeout
+    const res = await promiseWithTimeout(
+      app.pickSharedFile({
+        title: '选择共享文件夹'
+      }),
+      timeoutMs,
+      '宿主共享文件夹选择器响应超时'
+    );
 
     if (res && res.data) {
       const paths = Array.isArray(res.data) ? res.data : [res.data];
@@ -64,10 +102,14 @@ export async function pickSharedDirectory(): Promise<FnosPickResult> {
     }
 
     // 2. Fallback to pickUserFile with directory=true
-    const userRes = await app.pickUserFile({
-      directory: true,
-      title: '选择存储目录'
-    });
+    const userRes = await promiseWithTimeout(
+      app.pickUserFile({
+        directory: true,
+        title: '选择存储目录'
+      }),
+      timeoutMs,
+      '宿主存储目录选择器响应超时'
+    );
 
     if (userRes && userRes.data) {
       const paths = Array.isArray(userRes.data) ? userRes.data : [userRes.data];
@@ -83,25 +125,154 @@ export async function pickSharedDirectory(): Promise<FnosPickResult> {
 
     return { supported: true, success: false, canceled: true };
   } catch (err: any) {
-    console.warn('[fnosBridge] Failed to pick directory via @trimjs/web-app:', err);
+    console.warn('[fnosBridge] Failed to pick directory via @trimjs/web-app:', err?.message);
     return {
       supported: false,
       success: false,
-      error: err?.message || '调起系统文件选择器失败'
+      error: err?.message || '宿主选择器未响应（当前宿主版本未开放该通信接口）'
     };
   }
 }
 
 /**
- * Open the host fnOS App Settings window for NovelAI WebUI directly.
+ * Build route URL for fnOS App Auth Flow (/app-auth/pick-shared-file or /app-auth/authorize-shared-file).
  */
-export async function openFnOSAppSetting(): Promise<boolean> {
+export async function buildAppAuthUrl(
+  method: 'pickSharedFile' | 'authorizeSharedFile' = 'pickSharedFile',
+  targetPath?: string
+): Promise<string> {
+  const app = getTrimApp();
+  const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
+
+  if (method === 'authorizeSharedFile' && targetPath) {
+    return await app.buildAppAuthUrl('authorizeSharedFile', {
+      appName: 'novelai',
+      path: targetPath,
+      redirectUri: currentUrl,
+      state: 'novelai_auth'
+    });
+  }
+
+  return await app.buildAppAuthUrl('pickSharedFile', {
+    appName: 'novelai',
+    redirectUri: currentUrl,
+    state: 'novelai_pick'
+  });
+}
+
+/**
+ * Open fnOS route-based App Auth in a new window or top-level navigation.
+ */
+export async function openAppAuthRoute(
+  method: 'pickSharedFile' | 'authorizeSharedFile' = 'pickSharedFile',
+  targetPath?: string
+): Promise<FnosAppAuthRouteResult> {
+  try {
+    const authUrl = await buildAppAuthUrl(method, targetPath);
+    if (!authUrl) {
+      return { success: false, error: '无法生成授权跳转链接' };
+    }
+    const win = window.open(authUrl, '_blank');
+    if (!win) {
+      return { success: false, url: authUrl, error: '弹出窗口被浏览器拦截，请允许弹出窗口' };
+    }
+    return { success: true, url: authUrl };
+  } catch (err: any) {
+    console.warn('[fnosBridge] Failed to open App Auth route:', err?.message);
+    return { success: false, error: err?.message || '调起应用授权路由失败' };
+  }
+}
+
+/**
+ * Open the host fnOS App Settings window for NovelAI WebUI directly.
+ * Bounded by timeout and accompanied by postMessage fallbacks.
+ */
+export async function openFnOSAppSetting(timeoutMs = 1800): Promise<FnosAppSettingResult> {
+  if (!isInsideFnOS()) {
+    return {
+      success: false,
+      error: '当前在独立浏览器窗口运行，宿主设置通道不可用'
+    };
+  }
+
+  // Also broadcast standard postMessage events to parent/top window as backup
+  try {
+    if (typeof window !== 'undefined') {
+      const targets = [window.parent, window.top].filter(Boolean);
+      for (const t of targets) {
+        if (t && t !== window) {
+          t.postMessage({ type: 'openAppSetting', appName: 'novelai' }, '*');
+          t.postMessage({ action: 'openAppSetting', appName: 'novelai' }, '*');
+          t.postMessage({ fnOS: 'openAppSetting', appName: 'novelai' }, '*');
+          t.postMessage({ type: 'trim:openAppSetting', appName: 'novelai' }, '*');
+        }
+      }
+    }
+  } catch {}
+
   try {
     const app = getTrimApp();
-    await app.openAppSetting();
-    return true;
-  } catch (err) {
-    console.warn('[fnosBridge] openAppSetting failed:', err);
-    return false;
+    await promiseWithTimeout(
+      app.openAppSetting(),
+      timeoutMs,
+      '宿主系统设置响应超时（宿主未响应通信协议）'
+    );
+    return { success: true };
+  } catch (err: any) {
+    console.warn('[fnosBridge] openAppSetting failed or timed out:', err?.message);
+    return {
+      success: false,
+      error: err?.message || '调起系统设置未响应'
+    };
   }
+}
+
+/**
+ * Check if the current page was loaded via an App Auth redirect callback and extract authorized path.
+ */
+export function checkAppAuthCallback(): FnosAppAuthCallbackResult {
+  if (typeof window === 'undefined' || !window.location.search) {
+    return { hasCallback: false };
+  }
+
+  try {
+    const app = getTrimApp();
+    const result = app.parseAppAuthCallback(window.location.search);
+
+    if (result && result.status) {
+      // Clean up the URL parameters so a page refresh does not re-trigger
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('status');
+        url.searchParams.delete('path');
+        url.searchParams.delete('method');
+        url.searchParams.delete('appName');
+        url.searchParams.delete('state');
+        url.searchParams.delete('error');
+        window.history.replaceState({}, document.title, url.toString());
+      } catch {}
+
+      if (result.status === 'success' && result.path && result.path.length > 0) {
+        return {
+          hasCallback: true,
+          status: 'success',
+          path: String(result.path[0]),
+          method: result.method,
+          appName: result.appName
+        };
+      }
+
+      return {
+        hasCallback: true,
+        status: result.status,
+        method: result.method,
+        appName: result.appName,
+        error: result.error
+      };
+    }
+  } catch (err: any) {
+    console.warn('[fnosBridge] Failed to parse App Auth callback:', err?.message);
+  }
+
+  return { hasCallback: false };
 }

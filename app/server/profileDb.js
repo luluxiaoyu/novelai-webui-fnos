@@ -1044,6 +1044,7 @@ function saveSetting(db, key, value) {
 }
 
 module.exports = {
+  initDbSchema,
   getDb,
   closeDb,
   closeAllDbs,

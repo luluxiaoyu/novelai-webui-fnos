@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, computed } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { useAuthStore } from '../stores/auth';
 import { useProfileStore } from '../stores/profile';
 import { useGenerationStore } from '../stores/generation';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
 import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '../utils/mobilePerf';
-import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting } from '../utils/fnosBridge';
+import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting, openAppAuthRoute, checkAppAuthCallback } from '../utils/fnosBridge';
 import CustomSelect from './CustomSelect.vue';
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
   Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree,
-  SlidersHorizontal, FolderArchive, RefreshCw, FolderPlus, ExternalLink
+  SlidersHorizontal, FolderArchive, RefreshCw, FolderPlus, ExternalLink,
+  GitMerge, ArrowRightLeft, CheckCircle2
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -145,8 +146,35 @@ const isValidatingPath = ref(false);
 const pathValidationResult = ref<{ success: boolean; message?: string; error?: string } | null>(null);
 const isSwitchingPath = ref(false);
 const isPickingDirectory = ref(false);
+const isOpeningAppSetting = ref(false);
+const isOpeningAuthRoute = ref(false);
+const appSettingActionFeedback = ref<{ success: boolean; message: string } | null>(null);
 const showAuthGuideModal = ref(false);
+const authGuideReason = ref<string | null>(null);
 const originalStoragePath = ref('');
+
+// Incremental merge state
+const showMergeConfirmModal = ref(false);
+const pendingSwitchPath = ref('');
+const isMerging = ref(false);
+const mergeProgress = ref<{
+  jobId: string | null;
+  status: 'idle' | 'scanning' | 'merging' | 'completed' | 'failed';
+  progress: number;
+  current: number;
+  total: number;
+  detail: string;
+  error?: string | null;
+  stats?: { filesCopied: number; recordsMerged: number } | null;
+} | null>(null);
+let mergePollTimer: any = null;
+
+onUnmounted(() => {
+  if (mergePollTimer) {
+    clearTimeout(mergePollTimer);
+    mergePollTimer = null;
+  }
+});
 
 const currentPathInfo = computed(() => {
   const current = storagePath.value?.trim();
@@ -159,6 +187,15 @@ const isKnownPath = computed(() => {
 });
 
 const storagePathOptions = computed(() => {
+  const hasAppShare = authorizedPaths.value.some(p => p.type === 'app_share');
+  const filtered = authorizedPaths.value.filter(p => {
+    // When App Shared Directory is available, hide internal private directory (@appdata) completely
+    if (hasAppShare && (p.type === 'appdata' || p.path.includes('/var/data') || p.path.includes('@appdata'))) {
+      return false;
+    }
+    return true;
+  });
+
   const list: Array<{
     value: string;
     label: string;
@@ -166,7 +203,7 @@ const storagePathOptions = computed(() => {
     badge?: string;
     badgeType?: 'success' | 'warning' | 'error' | 'default';
     icon?: any;
-  }> = authorizedPaths.value.map(item => ({
+  }> = filtered.map(item => ({
     value: item.path,
     label: item.name,
     sublabel: item.path,
@@ -175,16 +212,18 @@ const storagePathOptions = computed(() => {
     icon: item.type === 'app_share' ? FolderArchive : (item.type === 'share' ? FolderTree : FolderPlus)
   }));
 
-  // If currently active path is not in authorized list, display it as a custom path option
+  // If currently active path is not in authorized list, display it as a custom path option (unless it is hidden appdata)
   if (!isKnownPath.value && storagePath.value) {
-    list.unshift({
-      value: storagePath.value,
-      label: `当前配置目录: ${storagePath.value}`,
-      sublabel: storagePath.value,
-      badge: '自定义',
-      badgeType: 'warning' as const,
-      icon: FolderTree
-    });
+    if (!hasAppShare || (!storagePath.value.includes('/var/data') && !storagePath.value.includes('@appdata'))) {
+      list.unshift({
+        value: storagePath.value,
+        label: `当前配置目录: ${storagePath.value}`,
+        sublabel: storagePath.value,
+        badge: '自定义',
+        badgeType: 'warning' as const,
+        icon: FolderTree
+      });
+    }
   }
 
   return list;
@@ -242,18 +281,87 @@ const fetchAuthorizedPaths = async () => {
   }
 };
 
+const promptDirectorySwitch = (targetPath: string) => {
+  if (!targetPath || !targetPath.trim()) return;
+  const cleanTarget = targetPath.trim();
+  const current = originalStoragePath.value?.trim();
+
+  // If target equals current canonical path, no need to prompt
+  const curInfo = authorizedPaths.value.find(p => p.path === current || p.mountPath === current);
+  const targetInfo = authorizedPaths.value.find(p => p.path === cleanTarget || p.mountPath === cleanTarget);
+  if (curInfo && targetInfo && curInfo.path === targetInfo.path) {
+    storagePath.value = cleanTarget;
+    manualPathInput.value = cleanTarget;
+    return;
+  }
+  if (cleanTarget === current) {
+    storagePath.value = cleanTarget;
+    manualPathInput.value = cleanTarget;
+    return;
+  }
+
+  pendingSwitchPath.value = cleanTarget;
+  storagePath.value = cleanTarget;
+  manualPathInput.value = cleanTarget;
+  showMergeConfirmModal.value = true;
+};
+
+const cancelDirectorySwitch = () => {
+  storagePath.value = originalStoragePath.value;
+  manualPathInput.value = originalStoragePath.value;
+  pendingSwitchPath.value = '';
+  showMergeConfirmModal.value = false;
+};
+
 const handleSelectPath = (val: string | number) => {
   const targetVal = String(val);
   if (!targetVal) return;
-  storagePath.value = targetVal;
-  manualPathInput.value = targetVal;
   pathValidationResult.value = null;
+  if (originalStoragePath.value && targetVal !== originalStoragePath.value) {
+    promptDirectorySwitch(targetVal);
+  } else {
+    storagePath.value = targetVal;
+    manualPathInput.value = targetVal;
+  }
 };
 
 const handleOpenAppSetting = async () => {
-  const success = await openFnOSAppSetting();
-  if (!success) {
-    showAuthGuideModal.value = true;
+  isOpeningAppSetting.value = true;
+  appSettingActionFeedback.value = null;
+  try {
+    const res = await openFnOSAppSetting();
+    if (res.success) {
+      appSettingActionFeedback.value = {
+        success: true,
+        message: '已成功向飞牛系统发起打开设置请求，请查看飞牛桌面'
+      };
+      setTimeout(() => {
+        appSettingActionFeedback.value = null;
+      }, 5000);
+    } else {
+      authGuideReason.value = res.error || '调起系统设置未响应，请在飞牛系统应用中心手动配置';
+      appSettingActionFeedback.value = {
+        success: false,
+        message: res.error || '调起系统设置未响应，请按指引在飞牛桌面【应用中心】手动打开'
+      };
+      showAuthGuideModal.value = true;
+    }
+  } finally {
+    isOpeningAppSetting.value = false;
+  }
+};
+
+const handleOpenAppAuthRoute = async () => {
+  isOpeningAuthRoute.value = true;
+  try {
+    const res = await openAppAuthRoute('pickSharedFile');
+    if (res.success) {
+      authGuideReason.value = '已在浏览器新窗口中打开系统授权页面，完成授权后请返回此处点击【刷新目录列表】';
+    } else {
+      authGuideReason.value = res.error || '调起系统授权页面失败，请通过下方指引在应用中心手动配置';
+    }
+  } finally {
+    isOpeningAuthRoute.value = false;
   }
 };
 
@@ -269,10 +377,14 @@ const handleApplyManualPath = async () => {
       data: { path: target }
     });
     if (res.data && res.data.success) {
-      storagePath.value = target;
       isManualMode.value = false;
       pathValidationResult.value = { success: true, message: '路径有效且具有读写权限' };
       await fetchAuthorizedPaths();
+      if (originalStoragePath.value && target !== originalStoragePath.value) {
+        promptDirectorySwitch(target);
+      } else {
+        storagePath.value = target;
+      }
     } else {
       pathValidationResult.value = { success: false, error: res.data?.error || '无读写权限' };
     }
@@ -308,14 +420,142 @@ const executeSwitchPath = async (targetPath: string): Promise<boolean> => {
       }, 3000);
       return true;
     } else {
+      storagePath.value = originalStoragePath.value;
+      manualPathInput.value = originalStoragePath.value;
       alert(`切换存储目录失败: ${res.data?.error || '未知错误'}`);
       return false;
     }
   } catch (err: any) {
+    storagePath.value = originalStoragePath.value;
+    manualPathInput.value = originalStoragePath.value;
     alert(`切换存储目录失败: ${err.response?.data?.error || err.message}`);
     return false;
   } finally {
     isSwitchingPath.value = false;
+  }
+};
+
+const switchWithoutMerge = async (targetPath?: string) => {
+  const pathToGo = targetPath || pendingSwitchPath.value;
+  showMergeConfirmModal.value = false;
+  if (!pathToGo) return;
+  const ok = await executeSwitchPath(pathToGo);
+  if (!ok) {
+    storagePath.value = originalStoragePath.value;
+    manualPathInput.value = originalStoragePath.value;
+  }
+};
+
+const startIncrementalMerge = async (targetPath?: string) => {
+  const pathToGo = targetPath || pendingSwitchPath.value;
+  if (!pathToGo) return;
+
+  if (mergePollTimer) {
+    clearTimeout(mergePollTimer);
+    mergePollTimer = null;
+  }
+
+  isMerging.value = true;
+  showMergeConfirmModal.value = false;
+  mergeProgress.value = {
+    jobId: null,
+    status: 'scanning',
+    progress: 0,
+    current: 0,
+    total: 0,
+    detail: '正在扫描文件与历史档案...'
+  };
+
+  try {
+    const res = await encryptedAxios({
+      method: 'POST',
+      url: '/api/storage/merge',
+      data: {
+        sourcePath: originalStoragePath.value,
+        targetPath: pathToGo,
+        switchOnComplete: true
+      }
+    });
+
+    if (res.data && res.data.success) {
+      const jobId = res.data.jobId;
+      if (mergeProgress.value) {
+        mergeProgress.value.jobId = jobId;
+      }
+
+      const pollStatus = async () => {
+        try {
+          const pollRes = await encryptedAxios({
+            method: 'GET',
+            url: `/api/storage/merge-status?jobId=${jobId}`
+          });
+          if (pollRes.data && pollRes.data.success) {
+            const data = pollRes.data;
+            mergeProgress.value = {
+              jobId: data.jobId,
+              status: data.status,
+              progress: data.progress ?? 0,
+              current: data.current ?? 0,
+              total: data.total ?? 0,
+              detail: data.detail || '',
+              error: data.error,
+              stats: data.stats
+            };
+
+            if (data.status === 'completed') {
+              storagePath.value = data.targetPath || pathToGo;
+              originalStoragePath.value = storagePath.value;
+              manualPathInput.value = storagePath.value;
+              await fetchAuthorizedPaths();
+              await profileStore.fetchProfiles();
+              const genStore = useGenerationStore();
+              genStore.cancelPendingSave();
+              genStore.isProfileDataLoaded = false;
+              await genStore.loadProfileData(profileStore.currentProfile);
+              setTimeout(() => {
+                isMerging.value = false;
+                mergeProgress.value = null;
+              }, 2000);
+              return;
+            } else if (data.status === 'failed') {
+              storagePath.value = originalStoragePath.value;
+              manualPathInput.value = originalStoragePath.value;
+              return;
+            }
+          }
+        } catch (pollErr: any) {
+          console.warn('[SettingsModal] Poll merge status error:', pollErr.message);
+        }
+
+        mergePollTimer = setTimeout(pollStatus, 350);
+      };
+
+      mergePollTimer = setTimeout(pollStatus, 200);
+    } else {
+      storagePath.value = originalStoragePath.value;
+      manualPathInput.value = originalStoragePath.value;
+      mergeProgress.value = {
+        jobId: null,
+        status: 'failed',
+        progress: 0,
+        current: 0,
+        total: 0,
+        detail: '启动合并任务失败',
+        error: res.data?.error || '启动合并任务失败'
+      };
+    }
+  } catch (err: any) {
+    storagePath.value = originalStoragePath.value;
+    manualPathInput.value = originalStoragePath.value;
+    mergeProgress.value = {
+      jobId: null,
+      status: 'failed',
+      progress: 0,
+      current: 0,
+      total: 0,
+      detail: '请求增量合并失败',
+      error: err.response?.data?.error || err.message || '请求增量合并失败'
+    };
   }
 };
 
@@ -325,21 +565,25 @@ const handlePickOrAuthorize = async () => {
     try {
       const res = await pickSharedDirectory();
       if (res.supported && res.success && res.path) {
-        const picked = res.path.trim();
-        storagePath.value = picked;
-        manualPathInput.value = picked;
-        await executeSwitchPath(picked);
+        promptDirectorySwitch(res.path.trim());
         return;
       } else if (res.canceled) {
         return;
+      } else {
+        authGuideReason.value = res.error || '系统文件选择器未响应（当前宿主版本未开放该通信接口）';
+        showAuthGuideModal.value = true;
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[SettingsModal] Native picker call error:', e);
+      authGuideReason.value = e?.message || '调起文件选择器异常';
+      showAuthGuideModal.value = true;
     } finally {
       isPickingDirectory.value = false;
     }
+  } else {
+    authGuideReason.value = '当前在独立浏览器窗口运行，请按指引在飞牛应用中心配置访问权限';
+    showAuthGuideModal.value = true;
   }
-  showAuthGuideModal.value = true;
 };
 
 const handleRefreshAfterAuth = async () => {
@@ -359,6 +603,7 @@ const handleRefreshAfterAuth = async () => {
     }
   }
   showAuthGuideModal.value = false;
+  authGuideReason.value = null;
 };
 
 // Load settings from backend
@@ -398,8 +643,18 @@ watch(() => props.modelValue, (val) => {
   }
 });
 
-onMounted(() => {
-  loadSettings();
+onMounted(async () => {
+  await loadSettings();
+  const authCallback = checkAppAuthCallback();
+  if (authCallback.hasCallback && authCallback.status === 'success' && authCallback.path) {
+    const newlyPicked = authCallback.path.trim();
+    if (originalStoragePath.value && newlyPicked !== originalStoragePath.value) {
+      promptDirectorySwitch(newlyPicked);
+    } else {
+      storagePath.value = newlyPicked;
+      manualPathInput.value = newlyPicked;
+    }
+  }
 });
 
 // Test NovelAI Token
@@ -480,11 +735,9 @@ const handleSaveSettings = async () => {
     }
     const newStorage = storagePath.value.trim();
     if (newStorage && isStoragePathChanged.value) {
-      const switched = await executeSwitchPath(newStorage);
-      if (!switched) {
-        isSaving.value = false;
-        return;
-      }
+      isSaving.value = false;
+      promptDirectorySwitch(newStorage);
+      return;
     }
 
     const payload = {
@@ -703,7 +956,7 @@ const handleDeleteProfile = async (name: string) => {
               </div>
 
               <!-- Action buttons group -->
-              <div class="flex items-center gap-1.5 self-start sm:self-auto shrink-0">
+              <div class="flex items-center gap-1.5 self-start sm:self-auto shrink-0 flex-wrap">
                 <button
                   type="button"
                   @click="fetchAuthorizedPaths"
@@ -719,11 +972,22 @@ const handleDeleteProfile = async (name: string) => {
                   @click="handlePickOrAuthorize"
                   :disabled="isPickingDirectory"
                   class="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/50 border border-blue-200 dark:border-blue-700/50 rounded-lg text-blue-700 dark:text-blue-300 font-medium text-xs flex items-center gap-1 transition shadow-sm cursor-pointer disabled:opacity-50"
-                  title="在飞牛中选择或授权新目录"
+                  title="在飞牛系统中选择或授权存储文件夹"
                 >
                   <Loader2 v-if="isPickingDirectory" class="w-3.5 h-3.5 animate-spin" />
                   <FolderPlus v-else class="w-3.5 h-3.5" />
-                  <span>{{ isPickingDirectory ? '正在调起选择器...' : '添加目录' }}</span>
+                  <span>{{ isPickingDirectory ? '调起授权中...' : '文件夹授权' }}</span>
+                </button>
+                <button
+                  type="button"
+                  @click="handleOpenAppSetting"
+                  :disabled="isOpeningAppSetting"
+                  class="px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/60 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-700 dark:text-gray-300 font-medium text-xs flex items-center gap-1 transition shadow-sm cursor-pointer disabled:opacity-50"
+                  title="调起飞牛系统应用设置（授权与配置）"
+                >
+                  <Loader2 v-if="isOpeningAppSetting" class="w-3.5 h-3.5 animate-spin" />
+                  <ExternalLink v-else class="w-3.5 h-3.5" />
+                  <span>{{ isOpeningAppSetting ? '调起设置中...' : '系统设置' }}</span>
                 </button>
                 <button
                   type="button"
@@ -736,6 +1000,26 @@ const handleDeleteProfile = async (name: string) => {
                   <span>{{ isManualMode ? '预设列表' : '自定义' }}</span>
                 </button>
               </div>
+            </div>
+
+            <!-- Feedback alert if system setting call has status -->
+            <div 
+              v-if="appSettingActionFeedback" 
+              class="px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-all"
+              :class="appSettingActionFeedback.success ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300'"
+            >
+              <span class="flex items-center gap-1.5 min-w-0">
+                <Check v-if="appSettingActionFeedback.success" class="w-3.5 h-3.5 shrink-0" />
+                <AlertCircle v-else class="w-3.5 h-3.5 shrink-0" />
+                <span class="truncate">{{ appSettingActionFeedback.message }}</span>
+              </span>
+              <button 
+                type="button" 
+                @click="appSettingActionFeedback = null" 
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 ml-2"
+              >
+                <X class="w-3.5 h-3.5" />
+              </button>
             </div>
 
             <!-- Hint if picking takes time in desktop -->
@@ -801,13 +1085,31 @@ const handleDeleteProfile = async (name: string) => {
                     <AlertCircle class="w-3.5 h-3.5 shrink-0" />
                     <span class="truncate">{{ currentPathInfo.reason || '未获得写入权限，请在飞牛系统应用中心授予读写权限' }}</span>
                   </div>
-                  <button
-                    type="button"
-                    @click="showAuthGuideModal = true"
-                    class="underline font-medium hover:text-amber-700 dark:hover:text-amber-300 shrink-0 text-left cursor-pointer"
-                  >
-                    查看授权指引
-                  </button>
+                  <div class="flex items-center gap-2.5 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      @click="handlePickOrAuthorize"
+                      :disabled="isPickingDirectory"
+                      class="underline font-medium hover:text-amber-700 dark:hover:text-amber-300 cursor-pointer disabled:opacity-50"
+                    >
+                      {{ isPickingDirectory ? '正在调起...' : '调起授权' }}
+                    </button>
+                    <button
+                      type="button"
+                      @click="handleOpenAppSetting"
+                      :disabled="isOpeningAppSetting"
+                      class="underline font-medium hover:text-amber-700 dark:hover:text-amber-300 cursor-pointer disabled:opacity-50"
+                    >
+                      {{ isOpeningAppSetting ? '正在调起...' : '系统设置' }}
+                    </button>
+                    <button
+                      type="button"
+                      @click="showAuthGuideModal = true"
+                      class="underline font-medium hover:text-amber-700 dark:hover:text-amber-300 cursor-pointer"
+                    >
+                      授权指引
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -818,11 +1120,11 @@ const handleDeleteProfile = async (name: string) => {
                 </span>
                 <button
                   type="button"
-                  @click="executeSwitchPath(storagePath)"
-                  :disabled="isSwitchingPath"
+                  @click="promptDirectorySwitch(storagePath)"
+                  :disabled="isSwitchingPath || isMerging"
                   class="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-medium text-xs flex items-center gap-1 transition shadow-sm shrink-0 cursor-pointer disabled:opacity-50"
                 >
-                  <Loader2 v-if="isSwitchingPath" class="w-3 h-3 animate-spin" />
+                  <Loader2 v-if="isSwitchingPath || isMerging" class="w-3 h-3 animate-spin" />
                   <span>立即切换</span>
                 </button>
               </div>
@@ -1115,6 +1417,179 @@ const handleDeleteProfile = async (name: string) => {
 
     </div>
 
+    <!-- 存储目录切换与增量合并确认弹窗 -->
+    <div 
+      v-if="showMergeConfirmModal && !isMerging" 
+      class="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fade-in"
+    >
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col space-y-4">
+        <!-- Title bar -->
+        <div class="flex items-center justify-between pb-3 border-b border-gray-200 dark:border-gray-800">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+              <GitMerge class="w-4 h-4" />
+            </div>
+            <div>
+              <h4 class="font-bold text-gray-900 dark:text-white text-sm sm:text-base leading-tight">切换数据存储目录</h4>
+              <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400">检测到存储路径变更，请选择数据迁移策略</p>
+            </div>
+          </div>
+          <button 
+            type="button"
+            @click="cancelDirectorySwitch"
+            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition cursor-pointer"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <!-- Path Comparison Cards -->
+        <div class="space-y-2 text-xs sm:text-sm">
+          <div class="p-3 rounded-xl bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 space-y-1.5">
+            <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+              <span>当前存储目录</span>
+              <span class="text-[11px] text-gray-400">原有数据源</span>
+            </div>
+            <div class="font-mono text-gray-800 dark:text-gray-200 text-xs sm:text-sm break-all font-medium">
+              {{ originalStoragePath }}
+            </div>
+          </div>
+
+          <div class="flex justify-center -my-1 text-gray-400 dark:text-gray-500">
+            <ArrowRightLeft class="w-4 h-4" />
+          </div>
+
+          <div class="p-3 rounded-xl bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-900/40 space-y-1.5">
+            <div class="flex items-center justify-between text-xs text-blue-600 dark:text-blue-400 font-medium">
+              <span>目标存储目录</span>
+              <span class="text-[11px] text-blue-500/80">切换目标</span>
+            </div>
+            <div class="font-mono text-blue-950 dark:text-blue-200 text-xs sm:text-sm break-all font-medium">
+              {{ pendingSwitchPath }}
+            </div>
+          </div>
+        </div>
+
+        <!-- Strategy Description Box -->
+        <div class="p-3 rounded-xl bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 space-y-1.5 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+          <div class="font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-1.5">
+            <ShieldCheck class="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <span>增量合并保障</span>
+          </div>
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            增量合并：仅复制目标目录不存在的文件与记录，保留全部历史图片与档案，绝不覆盖已有文件。若目标目录已有同名历史记录，将优先保留目标记录，无主键冲突风险。
+          </p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-col sm:flex-row items-center justify-end gap-2 pt-2 border-t border-gray-200 dark:border-gray-800">
+          <button
+            type="button"
+            @click="cancelDirectorySwitch"
+            class="w-full sm:w-auto px-4 py-2 text-xs font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded-xl transition cursor-pointer"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            @click="switchWithoutMerge()"
+            class="w-full sm:w-auto px-4 py-2 text-xs font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <ArrowRightLeft class="w-3.5 h-3.5" />
+            <span>仅切换目录（不迁移数据）</span>
+          </button>
+          <button
+            type="button"
+            @click="startIncrementalMerge()"
+            class="w-full sm:w-auto px-4 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+          >
+            <GitMerge class="w-3.5 h-3.5" />
+            <span>合并数据并切换</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 增量合并实时进度弹窗 -->
+    <div 
+      v-if="isMerging" 
+      class="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-fade-in"
+    >
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col space-y-4">
+        <!-- Title bar -->
+        <div class="flex items-center gap-2.5 pb-3 border-b border-gray-200 dark:border-gray-800">
+          <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" :class="mergeProgress?.status === 'completed' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : (mergeProgress?.status === 'failed' ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400' : 'bg-blue-500/10 text-blue-600 dark:text-blue-400')">
+            <CheckCircle2 v-if="mergeProgress?.status === 'completed'" class="w-4 h-4" />
+            <AlertCircle v-else-if="mergeProgress?.status === 'failed'" class="w-4 h-4" />
+            <Loader2 v-else class="w-4 h-4 animate-spin" />
+          </div>
+          <div>
+            <h4 class="font-bold text-gray-900 dark:text-white text-sm sm:text-base leading-tight">
+              {{ mergeProgress?.status === 'completed' ? '数据增量合并完成' : (mergeProgress?.status === 'failed' ? '数据增量合并失败' : '正在增量合并存储数据') }}
+            </h4>
+            <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400">
+              {{ mergeProgress?.status === 'completed' ? '两侧数据已同步完成，新存储目录已生效' : (mergeProgress?.status === 'failed' ? '合并过程遇到错误' : '正在安全扫描与复制未同步文件，合并 SQLite 历史') }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Progress Bar & Status -->
+        <div class="space-y-3 py-1">
+          <!-- Percent row -->
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-medium text-gray-700 dark:text-gray-300">
+              {{ mergeProgress?.status === 'completed' ? '合并已就绪' : (mergeProgress?.status === 'failed' ? '任务中断' : '同步处理中') }}
+            </span>
+            <span class="font-mono font-semibold" :class="mergeProgress?.status === 'completed' ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'">
+              {{ mergeProgress?.progress ?? 0 }}%
+            </span>
+          </div>
+
+          <!-- Progress Bar Track -->
+          <div class="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-3 overflow-hidden p-0.5 border border-gray-200/50 dark:border-gray-700/50">
+            <div 
+              class="h-full rounded-full transition-all duration-300 ease-out"
+              :class="mergeProgress?.status === 'completed' ? 'bg-emerald-500' : (mergeProgress?.status === 'failed' ? 'bg-rose-500' : 'bg-blue-600')"
+              :style="{ width: `${Math.max(3, mergeProgress?.progress ?? 0)}%` }"
+            ></div>
+          </div>
+
+          <!-- Counters & Detailed message -->
+          <div class="flex items-center justify-between text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 font-mono">
+            <span>已处理: {{ mergeProgress?.current ?? 0 }} / {{ mergeProgress?.total ?? 0 }} 项</span>
+            <span v-if="mergeProgress?.stats" class="text-emerald-600 dark:text-emerald-400 font-medium font-sans">
+              复制 {{ mergeProgress.stats.filesCopied }} 文件 / 合并 {{ mergeProgress.stats.recordsMerged }} 记录
+            </span>
+          </div>
+
+          <!-- Detail Message Box -->
+          <div class="p-3 rounded-xl bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 text-xs">
+            <div v-if="mergeProgress?.error" class="text-rose-600 dark:text-rose-400 flex items-start gap-1.5">
+              <AlertCircle class="w-4 h-4 shrink-0 mt-0.5" />
+              <span class="break-all">{{ mergeProgress.error }}</span>
+            </div>
+            <div v-else class="text-gray-600 dark:text-gray-300 flex items-center gap-2 truncate">
+              <Loader2 v-if="mergeProgress?.status !== 'completed'" class="w-3.5 h-3.5 animate-spin text-blue-500 shrink-0" />
+              <Check v-else class="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              <span class="truncate font-mono">{{ mergeProgress?.detail || '正在处理数据...' }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action / Close row when finished -->
+        <div v-if="mergeProgress?.status === 'completed' || mergeProgress?.status === 'failed'" class="flex justify-end pt-2 border-t border-gray-200 dark:border-gray-800">
+          <button
+            type="button"
+            @click="isMerging = false; mergeProgress = null"
+            class="px-4 py-2 text-xs font-medium rounded-xl transition cursor-pointer"
+            :class="mergeProgress?.status === 'completed' ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200'"
+          >
+            {{ mergeProgress?.status === 'completed' ? '完成' : '关闭' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 飞牛存储授权向导弹窗 (Scheme B 降级指引) -->
     <div 
       v-if="showAuthGuideModal" 
@@ -1140,31 +1615,62 @@ const handleDeleteProfile = async (name: string) => {
           </button>
         </div>
 
+        <!-- Diagnostic Reason if triggered by failed action -->
+        <div v-if="authGuideReason" class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-300 flex items-start gap-2">
+          <AlertCircle class="w-4 h-4 shrink-0 mt-0.5" />
+          <span class="leading-relaxed">{{ authGuideReason }}</span>
+        </div>
+
         <!-- 3-Step Guide -->
         <div class="space-y-3.5 text-xs sm:text-sm">
           <div class="flex gap-3 items-start bg-gray-50 dark:bg-gray-950 p-3 rounded-xl border border-gray-200 dark:border-gray-800">
             <span class="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">1</span>
-            <div class="space-y-0.5">
-              <div class="font-semibold text-gray-900 dark:text-gray-100">打开飞牛系统【应用设置】</div>
+            <div class="space-y-1.5 flex-1">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-gray-900 dark:text-gray-100">打开飞牛系统【应用设置】</span>
+                <button
+                  type="button"
+                  @click="handleOpenAppSetting"
+                  :disabled="isOpeningAppSetting"
+                  class="px-2.5 py-1 text-xs font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/40 border border-blue-200 dark:border-blue-700/50 rounded-lg transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                >
+                  <Loader2 v-if="isOpeningAppSetting" class="w-3 h-3 animate-spin" />
+                  <ExternalLink v-else class="w-3 h-3" />
+                  <span>{{ isOpeningAppSetting ? '调起中...' : '呼出应用设置' }}</span>
+                </button>
+              </div>
               <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
-                在飞牛 OS 桌面中打开【应用中心】->【已安装】，找到【NovelAI WebUI】图标，点击右上角【设置】按钮（或点击下方按钮直接呼出）。
+                在飞牛 OS 桌面中打开【应用中心】->【已安装】，找到【NovelAI WebUI】图标，点击右上角【设置】按钮。
               </div>
             </div>
           </div>
 
           <div class="flex gap-3 items-start bg-gray-50 dark:bg-gray-950 p-3 rounded-xl border border-gray-200 dark:border-gray-800">
             <span class="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">2</span>
-            <div class="space-y-0.5">
-              <div class="font-semibold text-gray-900 dark:text-gray-100">添加共享文件夹读写授权</div>
+            <div class="space-y-1.5 flex-1">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-gray-900 dark:text-gray-100">添加共享文件夹读写授权</span>
+                <button
+                  type="button"
+                  @click="handleOpenAppAuthRoute"
+                  :disabled="isOpeningAuthRoute"
+                  class="px-2.5 py-1 text-xs font-medium bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-800/40 border border-purple-200 dark:border-purple-700/50 rounded-lg transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                  title="使用飞牛原生 App Auth 授权路由打开选择器"
+                >
+                  <Loader2 v-if="isOpeningAuthRoute" class="w-3 h-3 animate-spin" />
+                  <FolderPlus v-else class="w-3 h-3" />
+                  <span>{{ isOpeningAuthRoute ? '打开中...' : '系统授权页面' }}</span>
+                </button>
+              </div>
               <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
-                切换至【访问权限】选项卡，点击【+ 添加】，勾选需要作为存储的共享文件夹，并将权限设为【读写】。
+                切换至【访问权限】选项卡，点击【+ 添加】，勾选需要作为存储的共享文件夹，并将权限设为【读写】。亦可点击上方按钮尝试通过飞牛系统授权路由直达。
               </div>
             </div>
           </div>
 
           <div class="flex gap-3 items-start bg-gray-50 dark:bg-gray-950 p-3 rounded-xl border border-gray-200 dark:border-gray-800">
             <span class="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">3</span>
-            <div class="space-y-0.5">
+            <div class="space-y-0.5 flex-1">
               <div class="font-semibold text-gray-900 dark:text-gray-100">保存设置并刷新目录列表</div>
               <div class="text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
                 在飞牛系统中完成授权配置后返回此处，点击下方按钮刷新，新增文件夹将自动进入下拉列表。
@@ -1178,10 +1684,12 @@ const handleDeleteProfile = async (name: string) => {
           <button
             type="button"
             @click="handleOpenAppSetting"
-            class="w-full sm:w-auto px-3.5 py-2 text-xs font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+            :disabled="isOpeningAppSetting"
+            class="w-full sm:w-auto px-3.5 py-2 text-xs font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
-            <ExternalLink class="w-3.5 h-3.5" />
-            <span>打开系统应用设置</span>
+            <Loader2 v-if="isOpeningAppSetting" class="w-3.5 h-3.5 animate-spin" />
+            <ExternalLink v-else class="w-3.5 h-3.5" />
+            <span>{{ isOpeningAppSetting ? '正在调起系统设置...' : '打开系统应用设置' }}</span>
           </button>
 
           <div class="flex items-center gap-2 w-full sm:w-auto justify-end">

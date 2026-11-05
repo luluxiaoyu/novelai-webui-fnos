@@ -295,4 +295,211 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
       assert.ok(fs.existsSync(path.join(realDir, 'logs')));
     }
   });
+
+  test('13. mergeStorageData incrementally copies files without overwriting existing files', async () => {
+    const srcDir = path.join(TEST_BASE, 'merge_src_1');
+    const destDir = path.join(TEST_BASE, 'merge_dest_1');
+    fs.mkdirSync(path.join(srcDir, 'profiles/Default/images/2026/11'), { recursive: true });
+    fs.mkdirSync(path.join(destDir, 'profiles/Default/images/2026/11'), { recursive: true });
+    fs.mkdirSync(path.join(srcDir, 'logs/generation/2026-11'), { recursive: true });
+
+    // Both have shared_img.png but different content
+    fs.writeFileSync(path.join(srcDir, 'profiles/Default/images/2026/11/shared.png'), 'src_shared_version');
+    fs.writeFileSync(path.join(destDir, 'profiles/Default/images/2026/11/shared.png'), 'dest_original_version');
+
+    // Source has a new unique image
+    fs.writeFileSync(path.join(srcDir, 'profiles/Default/images/2026/11/new_src.png'), 'src_new_content');
+
+    // Source has a log file
+    fs.writeFileSync(path.join(srcDir, 'logs/generation/2026-11/gen_1.log'), 'gen_log_content');
+
+    const progressReports = [];
+    const res = await storageManager.mergeStorageData(srcDir, destDir, (p) => progressReports.push(p), false);
+
+    assert.equal(res.success, true);
+    assert.equal(res.filesCopied, 2); // new_src.png and gen_1.log
+
+    // Verify existing file was NOT overwritten
+    const sharedContent = fs.readFileSync(path.join(destDir, 'profiles/Default/images/2026/11/shared.png'), 'utf8');
+    assert.equal(sharedContent, 'dest_original_version');
+
+    // Verify new file was copied
+    const newContent = fs.readFileSync(path.join(destDir, 'profiles/Default/images/2026/11/new_src.png'), 'utf8');
+    assert.equal(newContent, 'src_new_content');
+
+    // Verify progress reported completed
+    assert.ok(progressReports.some(p => p.phase === 'completed' && p.percent === 100));
+  });
+
+  test('14. mergeStorageData merges SQLite records without duplicate key conflicts', async () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const srcDir = path.join(TEST_BASE, 'merge_src_db');
+    const destDir = path.join(TEST_BASE, 'merge_dest_db');
+    fs.mkdirSync(path.join(srcDir, 'profiles/Default'), { recursive: true });
+    fs.mkdirSync(path.join(destDir, 'profiles/Default'), { recursive: true });
+
+    const srcDb = new DatabaseSync(path.join(srcDir, 'profiles/Default/profile.db'));
+    profileDb.initDbSchema(srcDb);
+    // Source records
+    srcDb.prepare(`INSERT INTO history (id, url, timestamp, prompt) VALUES (?, ?, ?, ?)`).run('shared_id', '/api/images/Default/shared.png', 1000, 'src prompt');
+    srcDb.prepare(`INSERT INTO history (id, url, timestamp, prompt) VALUES (?, ?, ?, ?)`).run('src_unique_id', '/api/images/Default/unique.png', 2000, 'unique prompt');
+    srcDb.prepare(`INSERT INTO styles (id, name, prompt) VALUES (?, ?, ?)`).run('src_style_1', 'Src Style', 'style prompt');
+    srcDb.close();
+
+    const destDb = new DatabaseSync(path.join(destDir, 'profiles/Default/profile.db'));
+    profileDb.initDbSchema(destDb);
+    // Dest has shared_id with different prompt
+    destDb.prepare(`INSERT INTO history (id, url, timestamp, prompt) VALUES (?, ?, ?, ?)`).run('shared_id', '/api/images/Default/shared.png', 1000, 'dest original prompt');
+    destDb.prepare(`INSERT INTO history (id, url, timestamp, prompt) VALUES (?, ?, ?, ?)`).run('dest_unique_id', '/api/images/Default/dest_unique.png', 3000, 'dest prompt');
+    destDb.close();
+
+    const res = await storageManager.mergeStorageData(srcDir, destDir, () => {}, false);
+    assert.equal(res.success, true);
+    assert.ok(res.recordsMerged >= 2);
+
+    // Verify destination DB contents
+    const checkDb = new DatabaseSync(path.join(destDir, 'profiles/Default/profile.db'));
+    const rows = checkDb.prepare(`SELECT * FROM history ORDER BY timestamp`).all();
+    assert.equal(rows.length, 3); // shared_id, src_unique_id, dest_unique_id
+
+    // shared_id should preserve destination's prompt
+    const sharedRow = rows.find(r => r.id === 'shared_id');
+    assert.equal(sharedRow.prompt, 'dest original prompt');
+
+    // src_unique_id should be present
+    const srcRow = rows.find(r => r.id === 'src_unique_id');
+    assert.equal(srcRow.prompt, 'unique prompt');
+
+    // src_style_1 should be merged
+    const styles = checkDb.prepare(`SELECT * FROM styles`).all();
+    assert.equal(styles.length, 1);
+    assert.equal(styles[0].name, 'Src Style');
+
+    checkDb.close();
+  });
+
+  test('15. startMergeJob and getMergeJobStatus track asynchronous merge progress', async () => {
+    const srcDir = path.join(TEST_BASE, 'job_src');
+    const destDir = path.join(TEST_BASE, 'job_dest');
+    fs.mkdirSync(path.join(srcDir, 'profiles/Default/images'), { recursive: true });
+    fs.mkdirSync(destDir, { recursive: true });
+
+    for (let i = 0; i < 5; i++) {
+      fs.writeFileSync(path.join(srcDir, `profiles/Default/images/img_${i}.png`), `data_${i}`);
+    }
+
+    const job = storageManager.startMergeJob(srcDir, destDir, true);
+    assert.ok(job.jobId);
+    assert.equal(job.status, 'scanning');
+
+    // Poll until completed
+    let finalStatus = null;
+    for (let i = 0; i < 50; i++) {
+      await new Promise(r => setTimeout(r, 50));
+      finalStatus = storageManager.getMergeJobStatus(job.jobId);
+      if (finalStatus.status === 'completed' || finalStatus.status === 'failed') {
+        break;
+      }
+    }
+
+    assert.equal(finalStatus.status, 'completed');
+    assert.equal(finalStatus.progress, 100);
+    assert.equal(finalStatus.stats.filesCopied, 5);
+    assert.equal(configManager.getConfig().storagePath, destDir);
+  });
+
+  test('16. POST /storage/merge and GET /storage/merge-status HTTP API endpoints', async () => {
+    const srcDir = path.join(TEST_BASE, 'api_merge_src');
+    const destDir = path.join(TEST_BASE, 'api_merge_dest');
+    fs.mkdirSync(path.join(srcDir, 'profiles/Default/images'), { recursive: true });
+    fs.mkdirSync(destDir, { recursive: true });
+
+    fs.writeFileSync(path.join(srcDir, 'profiles/Default/images/api_test.png'), 'test_image');
+
+    const startRes = await invoke('POST', '/storage/merge', {
+      sourcePath: srcDir,
+      targetPath: destDir,
+      switchOnComplete: true
+    });
+
+    assert.equal(startRes.status, 200);
+    assert.equal(startRes.data.success, true);
+    assert.ok(startRes.data.jobId);
+
+    // Poll status endpoint
+    let pollRes = null;
+    for (let i = 0; i < 50; i++) {
+      await new Promise(r => setTimeout(r, 50));
+      pollRes = await invoke('GET', `/storage/merge-status?jobId=${startRes.data.jobId}`);
+      if (pollRes.data.status === 'completed' || pollRes.data.status === 'failed') {
+        break;
+      }
+    }
+
+    assert.equal(pollRes.status, 200);
+    assert.equal(pollRes.data.status, 'completed');
+    assert.equal(pollRes.data.progress, 100);
+  });
+
+  test('17. getAuthorizedPaths hides @appdata/novelai/data when NovelAI-WebUI app share exists', () => {
+    // Ensure NovelAI-WebUI share candidate is present
+    const webuiShareDir = path.join(TEST_BASE, 'shares/NovelAI-WebUI');
+    fs.mkdirSync(webuiShareDir, { recursive: true });
+    process.env.TRIM_DATA_SHARE_PATHS = webuiShareDir;
+
+    const res = storageManager.getAuthorizedPaths();
+    const types = res.paths.map(p => p.type);
+    const paths = res.paths.map(p => p.path);
+
+    // App share should be present
+    assert.ok(types.includes('app_share'));
+    // Internal appdata should NOT be present
+    assert.ok(!types.includes('appdata'), 'appdata type must be hidden when app_share exists');
+    assert.ok(!paths.some(p => p.includes(path.join(TEST_PKG_VAR, 'data'))), 'internal data path must not be in list');
+  });
+
+  test('18. mergeStorageData detects symlinked alias to same realpath and finishes without locking', async () => {
+    const realDir = path.join(TEST_BASE, 'merge_symlink_real');
+    const linkDir = path.join(TEST_BASE, 'merge_symlink_link');
+    fs.mkdirSync(path.join(realDir, 'profiles/Default'), { recursive: true });
+    try {
+      fs.symlinkSync(realDir, linkDir, 'dir');
+    } catch {}
+
+    if (fs.existsSync(linkDir)) {
+      let progressReported = null;
+      const res = await storageManager.mergeStorageData(linkDir, realDir, (p) => { progressReported = p; }, true);
+      assert.equal(res.success, true);
+      assert.equal(res.filesCopied, 0);
+      assert.equal(res.recordsMerged, 0);
+      assert.ok(progressReported);
+      assert.equal(progressReported.phase, 'completed');
+      assert.match(progressReported.detail, /两侧存储目录相同/);
+    }
+  });
+
+  test('19. scanFilesToCopy ignores foreign directories and NAS special folders', () => {
+    const srcDir = path.join(TEST_BASE, 'foreign_dirs_src');
+    const destDir = path.join(TEST_BASE, 'foreign_dirs_dest');
+    fs.mkdirSync(path.join(srcDir, 'profiles/Default/images'), { recursive: true });
+    fs.mkdirSync(path.join(srcDir, 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(srcDir, '@eaDir'), { recursive: true });
+    fs.mkdirSync(path.join(srcDir, '#recycle'), { recursive: true });
+    fs.mkdirSync(path.join(srcDir, 'UnrelatedUserFolder'), { recursive: true });
+
+    fs.writeFileSync(path.join(srcDir, 'profiles/Default/images/pic.png'), 'pic_data');
+    fs.writeFileSync(path.join(srcDir, 'logs/gen.log'), 'log_data');
+    fs.writeFileSync(path.join(srcDir, '@eaDir/@test'), 'eadir_data');
+    fs.writeFileSync(path.join(srcDir, '#recycle/deleted.png'), 'recycle_data');
+    fs.writeFileSync(path.join(srcDir, 'UnrelatedUserFolder/movie.mp4'), 'mp4_data');
+
+    const files = storageManager.scanFilesToCopy(srcDir, destDir);
+    const rels = files.map(f => f.rel);
+
+    assert.ok(rels.includes('profiles/Default/images/pic.png'));
+    assert.ok(rels.includes('logs/gen.log'));
+    assert.ok(!rels.some(r => r.startsWith('@eaDir')));
+    assert.ok(!rels.some(r => r.startsWith('#recycle')));
+    assert.ok(!rels.some(r => r.startsWith('UnrelatedUserFolder')));
+  });
 });

@@ -217,6 +217,44 @@ router.post('/storage/switch', (req, res) => {
   }
 });
 
+// Start incremental merge between storage directories
+router.post('/storage/merge', (req, res) => {
+  try {
+    const { sourcePath, targetPath, switchOnComplete = true } = req.body || {};
+    if (!targetPath || typeof targetPath !== 'string' || !targetPath.trim()) {
+      return res.status(400).json({ success: false, error: '请提供目标存储路径' });
+    }
+    const currentCfg = getConfig();
+    const src = (sourcePath && typeof sourcePath === 'string' && sourcePath.trim()) 
+      ? sourcePath.trim() 
+      : currentCfg.storagePath;
+
+    const startResult = storageManager.startMergeJob(src, targetPath.trim(), !!switchOnComplete);
+    res.json({
+      success: true,
+      jobId: startResult.jobId,
+      message: startResult.message,
+      status: startResult.status
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message || '启动增量合并失败' });
+  }
+});
+
+// Query incremental merge progress status
+router.get('/storage/merge-status', (req, res) => {
+  try {
+    const { jobId } = req.query || {};
+    const status = storageManager.getMergeJobStatus(jobId);
+    res.json({
+      success: true,
+      ...status
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || '获取合并状态失败' });
+  }
+});
+
 // ==================== Queue Status ====================
 
 router.get('/queue-status', (req, res) => {

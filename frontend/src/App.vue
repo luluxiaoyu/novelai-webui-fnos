@@ -2642,14 +2642,14 @@ watch(
               class="px-2.5 py-1 text-[11px] rounded-full whitespace-nowrap font-medium transition flex items-center gap-1 shrink-0"
               :class="promptDateFilter === 'today' ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-200/80 dark:bg-gray-800 text-gray-700 dark:text-gray-300'"
             >
-              📅 今天
+              今天
             </button>
             <button 
               @click="promptDateFilter = promptDateFilter === 'week' ? 'all' : 'week'"
               class="px-2.5 py-1 text-[11px] rounded-full whitespace-nowrap font-medium transition flex items-center gap-1 shrink-0"
               :class="promptDateFilter === 'week' ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-200/80 dark:bg-gray-800 text-gray-700 dark:text-gray-300'"
             >
-              📅 近7天
+              近7天
             </button>
             <button 
               v-for="group in customPromptGroups" :key="group"
@@ -2657,7 +2657,7 @@ watch(
               class="px-2.5 py-1 text-[11px] rounded-full whitespace-nowrap font-medium transition flex items-center gap-1 shrink-0"
               :class="promptGroupFilter === group ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-200/80 dark:bg-gray-800 text-gray-700 dark:text-gray-300'"
             >
-              📁 {{ group }}
+              {{ group }}
             </button>
           </div>
         </div>
@@ -3094,7 +3094,7 @@ watch(
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="font-semibold text-xs text-gray-900 dark:text-gray-100 group-hover:text-purple-600 dark:group-hover:text-purple-400">
-                    🎨 载入为局部重绘
+                    载入为局部重绘
                   </div>
                   <p class="text-[10px] text-gray-400 mt-0.5">载入底图并进入遮罩涂抹</p>
                 </div>
@@ -3110,7 +3110,7 @@ watch(
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="font-semibold text-xs text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400">
-                    🖼️ 载入为图生图
+                    载入为图生图
                   </div>
                   <p class="text-[10px] text-gray-400 mt-0.5">作为底图进行垫图微调生成</p>
                 </div>
