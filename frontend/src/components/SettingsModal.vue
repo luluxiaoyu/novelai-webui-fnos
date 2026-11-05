@@ -325,40 +325,31 @@ const handleDeleteProfile = async (name: string) => {
         </button>
       </div>
 
-      <!-- Navigation Tabs (现代化响应式平滑横向滚动与防折行) -->
-      <div class="flex border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 gap-1.5 sm:gap-6 bg-gray-50/50 dark:bg-gray-900/60 overflow-x-auto scrollbar-none overscroll-x-contain select-none">
-        <button 
-          @click="activeTab = 'general'"
-          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
-          :class="activeTab === 'general' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
-        >
-          <SlidersHorizontal class="w-3.5 h-3.5 shrink-0" />
-          <span>常规设置</span>
-        </button>
-        <button 
-          @click="activeTab = 'profiles'"
-          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
-          :class="activeTab === 'profiles' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
-        >
-          <FolderArchive class="w-3.5 h-3.5 shrink-0" />
-          <span>存档管理</span>
-        </button>
-        <button 
-          @click="activeTab = 'security'"
-          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
-          :class="activeTab === 'security' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
-        >
-          <ShieldCheck class="w-3.5 h-3.5 shrink-0" />
-          <span>安全传输</span>
-        </button>
-        <button 
-          @click="activeTab = 'performance'"
-          class="py-3 px-2 sm:px-1 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 flex items-center gap-1.5 relative"
-          :class="activeTab === 'performance' ? 'text-blue-600 dark:text-blue-400 font-semibold after:content-[\'\'] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-blue-600 dark:after:bg-blue-400' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'"
-        >
-          <FileText class="w-3.5 h-3.5 shrink-0" />
-          <span>任务与日志</span>
-        </button>
+      <!-- Navigation Tabs (响应式防折行与全宽均衡排版) -->
+      <div class="border-b border-gray-200 dark:border-gray-800 px-3 sm:px-6 bg-gray-50/50 dark:bg-gray-900/50 select-none">
+        <div class="grid grid-cols-4 sm:flex sm:justify-start sm:gap-8">
+          <button 
+            v-for="tab in [
+              { id: 'general', label: '常规设置', icon: SlidersHorizontal },
+              { id: 'profiles', label: '存档管理', icon: FolderArchive },
+              { id: 'security', label: '安全传输', icon: ShieldCheck },
+              { id: 'performance', label: '任务与日志', icon: FileText }
+            ]"
+            :key="tab.id"
+            @click="activeTab = tab.id as any"
+            type="button"
+            class="py-3 sm:py-3.5 px-1 text-xs sm:text-sm font-medium transition-colors relative outline-none focus:outline-none focus:ring-0 flex items-center justify-center sm:justify-start gap-1.5 cursor-pointer"
+            :class="activeTab === tab.id ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'"
+          >
+            <component :is="tab.icon" class="w-4 h-4 shrink-0 hidden sm:block" />
+            <span class="whitespace-nowrap">{{ tab.label }}</span>
+            <!-- 激活下划线指示条 (保证准确贴底对齐且永不被浏览器黑框遮挡) -->
+            <div 
+              v-if="activeTab === tab.id" 
+              class="absolute -bottom-px left-1.5 right-1.5 sm:left-0 sm:right-0 h-0.5 bg-blue-600 dark:bg-blue-400 rounded-full"
+            ></div>
+          </button>
+        </div>
       </div>
 
       <!-- Tab Content Area -->
