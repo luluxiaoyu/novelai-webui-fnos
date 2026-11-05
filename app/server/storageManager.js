@@ -127,16 +127,13 @@ function getAuthorizedPaths() {
   }
 
   // 4. Default package var data dir (${TRIM_PKGVAR}/data)
+  // Only include internal package data dir if no default app shares exist or it is explicitly configured
+  const hasAppShare = candidates.some(c => c.shareName === 'NovelAI-WebUI' || c.shareName === 'NovelAI');
   const defaultVarData = path.join(PKG_VAR, 'data');
-  candidates.push({ rawPath: defaultVarData, source: 'default_data', shareName: 'data' });
+  const isDefaultVarDataCurrent = currentCfg.storagePath && path.resolve(currentCfg.storagePath) === path.resolve(defaultVarData);
 
-  // 5. Current config storage path
-  if (currentCfg.storagePath) {
-    candidates.push({
-      rawPath: currentCfg.storagePath,
-      source: 'current_config',
-      shareName: path.basename(currentCfg.storagePath)
-    });
+  if (!hasAppShare || isDefaultVarDataCurrent) {
+    candidates.push({ rawPath: defaultVarData, source: 'default_data', shareName: 'data' });
   }
 
   // Deduplicate entries by canonical real path
@@ -160,22 +157,22 @@ function getAuthorizedPaths() {
 
     const writeCheck = testPathWritable(realPath);
 
-    // Format friendly display name & category
+    // Format friendly display name & category (strictly no emojis, professional terminology)
     let friendlyName = '';
     let itemType = 'custom';
     const baseName = item.shareName || path.basename(realPath);
 
     if (baseName === 'NovelAI-WebUI' || baseName === 'NovelAI' || realPath.endsWith('/shares/NovelAI-WebUI')) {
-      friendlyName = `📦 默认应用文件 (应用文件/NovelAI-WebUI)`;
+      friendlyName = '应用文件/NovelAI-WebUI (默认)';
       itemType = 'app_share';
     } else if (item.source === 'default_data' || realPath.includes('/var/data') || realPath.includes('@appdata')) {
-      friendlyName = `💾 应用私有数据包 (@appdata/novelai/data)`;
+      friendlyName = `应用私有目录: ${baseName}`;
       itemType = 'appdata';
     } else if (item.source === 'shares_dir' || item.source === 'env_share' || realPath.includes('/shares/')) {
-      friendlyName = `📁 共享文件夹: ${baseName} (${realPath})`;
+      friendlyName = `共享文件夹: ${baseName}`;
       itemType = 'share';
     } else {
-      friendlyName = `📂 自定义目录: ${baseName} (${realPath})`;
+      friendlyName = `自定义路径: ${baseName}`;
       itemType = 'custom';
     }
 
