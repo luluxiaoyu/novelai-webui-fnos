@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
+import { useProfileStore } from '../stores/profile';
+import { openNasImageInHost } from '../utils/fnosBridge';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { 
   X, Search, Calendar, Download, Trash2, SlidersHorizontal, 
   Paintbrush, Copy, Check, Archive, CheckSquare, Square, 
   ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Grid, 
-  Layers, Clock, ArrowUpDown, Sparkles, Maximize2, Loader2
+  Layers, Clock, ArrowUpDown, Sparkles, Maximize2, Loader2, FolderOpen
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -391,6 +393,24 @@ const toggleGroupSelection = (groupImages: GeneratedImage[]) => {
     groupImages.forEach(img => selectedIds.value.delete(img.id));
   } else {
     groupImages.forEach(img => selectedIds.value.add(img.id));
+  }
+};
+
+const profileStore = useProfileStore();
+const openingNasId = ref<string | null>(null);
+
+const handleOpenInNas = async (img: GeneratedImage | null) => {
+  if (!img || openingNasId.value === img.id) return;
+  openingNasId.value = img.id;
+  try {
+    const res = await openNasImageInHost(profileStore.currentProfile, img);
+    if (!res.success && res.message) {
+      alert(res.message);
+    }
+  } catch (err: any) {
+    alert(err.message || '在 NAS 中打开图片失败');
+  } finally {
+    openingNasId.value = null;
   }
 };
 
@@ -864,15 +884,24 @@ const formatDateFull = (timestamp: number) => {
 
                     <div class="flex items-center gap-1">
                       <button 
+                        @click.stop="handleOpenInNas(item)"
+                        :disabled="openingNasId === item.id"
+                        class="p-1 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition active:scale-95 cursor-pointer disabled:opacity-50"
+                        title="在 NAS 中打开此文件"
+                      >
+                        <Loader2 v-if="openingNasId === item.id" class="w-3.5 h-3.5 animate-spin" />
+                        <FolderOpen v-else class="w-3.5 h-3.5" />
+                      </button>
+                      <button 
                         @click.stop="downloadSingleImage(item)"
-                        class="p-1 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition active:scale-95"
+                        class="p-1 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition active:scale-95 cursor-pointer"
                         title="下载单张原图"
                       >
                         <Download class="w-3.5 h-3.5" />
                       </button>
                       <button 
                         @click.stop="deleteSingle(item)"
-                        class="p-1 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition active:scale-95"
+                        class="p-1 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition active:scale-95 cursor-pointer"
                         title="删除此图"
                       >
                         <Trash2 class="w-3.5 h-3.5" />
@@ -1035,8 +1064,18 @@ const formatDateFull = (timestamp: number) => {
             <!-- 右侧操作 -->
             <div class="flex items-center gap-2">
               <button 
+                @click="handleOpenInNas(selectedImage)"
+                :disabled="openingNasId === selectedImage.id"
+                class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                title="在 NAS 中打开此文件"
+              >
+                <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
+                <FolderOpen v-else class="w-3.5 h-3.5" />
+                <span>在NAS中打开</span>
+              </button>
+              <button 
                 @click="downloadSingleImage(selectedImage)"
-                class="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1.5 text-xs active:scale-95 shadow-sm"
+                class="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1.5 text-xs active:scale-95 shadow-sm cursor-pointer"
                 title="下载此原图"
               >
                 <Download class="w-3.5 h-3.5" />
@@ -1065,8 +1104,17 @@ const formatDateFull = (timestamp: number) => {
               </div>
               <div class="flex items-center gap-1">
                 <button 
+                  @click="handleOpenInNas(selectedImage)"
+                  :disabled="openingNasId === selectedImage.id"
+                  class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition cursor-pointer disabled:opacity-50"
+                  title="在 NAS 中打开此文件"
+                >
+                  <Loader2 v-if="openingNasId === selectedImage.id" class="w-4 h-4 animate-spin" />
+                  <FolderOpen v-else class="w-4 h-4" />
+                </button>
+                <button 
                   @click="deleteSingle(selectedImage)"
-                  class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition"
+                  class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition cursor-pointer"
                   title="删除这张图片"
                 >
                   <Trash2 class="w-4 h-4" />

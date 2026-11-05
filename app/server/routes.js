@@ -453,6 +453,27 @@ router.get('/profiles/history', (req, res) => {
   }
 });
 
+// Resolve absolute NAS disk path for an image
+router.get('/profiles/images/disk-path', (req, res) => {
+  try {
+    const profile = req.query.profile || getConfig().activeProfile || 'Default';
+    const subpathOrId = req.query.url || req.query.id;
+    if (!subpathOrId) {
+      return res.status(400).json({ success: false, error: '缺少图片标识或路径' });
+    }
+    const diskPath = profileManager.getImagePath(profile, subpathOrId);
+    if (!diskPath) {
+      return res.status(404).json({ success: false, error: '未在磁盘中找到该图片文件' });
+    }
+    res.json({
+      success: true,
+      path: diskPath
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || '获取图片磁盘路径失败' });
+  }
+});
+
 // Save single generated image to NAS disk and history
 router.post('/profiles/images/save', (req, res) => {
   try {

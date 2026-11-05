@@ -86,6 +86,57 @@ export async function openFnOSFileManager(targetPath: string): Promise<{ success
   }
 }
 
+export async function openFnOSFile(filePath: string): Promise<{ success: boolean; error?: string }> {
+  if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统桌面端内支持直接打开文件' };
+  try {
+    const app = await ready();
+    try {
+      await app.openFile(filePath);
+      return { success: true };
+    } catch {
+      await app.openFileManager(filePath);
+      return { success: true };
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : '打开文件失败' };
+  }
+}
+
+export async function openNasImageInHost(profile: string, item: { url?: string; id?: string }): Promise<{ success: boolean; message?: string }> {
+  if (!item || (!item.url && !item.id)) {
+    return { success: false, message: '无效的图片标识' };
+  }
+  try {
+    const targetUrl = resolveApiUrl(`/api/profiles/images/disk-path?profile=${encodeURIComponent(profile || 'Default')}&url=${encodeURIComponent(item.url || '')}&id=${encodeURIComponent(item.id || '')}`);
+    const res = await fetch(targetUrl);
+    if (!res.ok) {
+      let err = '未找到该图片在 NAS 上的持久化文件';
+      try { const j = await res.json(); if (j.error) err = j.error; } catch {}
+      return { success: false, message: err };
+    }
+    const data = await res.json();
+    if (!data.success || !data.path) {
+      return { success: false, message: data.error || '未获取到磁盘路径' };
+    }
+    const diskPath = data.path as string;
+    if (!isInsideFnOS()) {
+      try {
+        await navigator.clipboard.writeText(diskPath);
+        return { success: true, message: `已复制 NAS 文件路径到剪贴板: ${diskPath}` };
+      } catch {
+        return { success: false, message: `NAS 文件路径: ${diskPath}` };
+      }
+    }
+    const openRes = await openFnOSFile(diskPath);
+    if (!openRes.success) {
+      return { success: false, message: openRes.error || '打开文件失败' };
+    }
+    return { success: true, message: '已在 NAS 中打开图片' };
+  } catch (err: any) {
+    return { success: false, message: err.message || '打开文件失败' };
+  }
+}
+
 export async function pickNasImage(): Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }> {
   if (!isInsideFnOS()) return { success: false, error: '请在飞牛系统桌面端内使用此功能' };
   try {

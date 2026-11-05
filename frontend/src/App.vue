@@ -19,7 +19,7 @@ import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
 import ProfileDropdown from './components/ProfileDropdown.vue';
 import WelcomeSetupModal from './components/WelcomeSetupModal.vue';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
-import { pickNasImage, fetchNasImageFile } from './utils/fnosBridge';
+import { pickNasImage, fetchNasImageFile, openNasImageInHost } from './utils/fnosBridge';
 import { Sun, Moon, Download, Copy, Loader2, Image as ImageIcon, X, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink } from 'lucide-vue-next';
 
 const authStore = useAuthStore();
@@ -938,6 +938,22 @@ const handlePickNasImageForInspection = async () => {
     alert(err.message || '加载 NAS 图片失败');
   } finally {
     isPickingNasImage.value = false;
+  }
+};
+
+const openingNasId = ref<string | null>(null);
+const handleOpenInNas = async (img: any) => {
+  if (!img || openingNasId.value === img.id) return;
+  openingNasId.value = img.id;
+  try {
+    const res = await openNasImageInHost(profileStore.currentProfile, img);
+    if (!res.success && res.message) {
+      alert(res.message);
+    }
+  } catch (err: any) {
+    alert(err.message || '在 NAS 中打开图片失败');
+  } finally {
+    openingNasId.value = null;
   }
 };
 
@@ -2340,8 +2356,17 @@ watch(
                 </button>
               </div>
 
-              <!-- 第 2 组操作 (移动端第 2 行 / PC端并排右侧)：下载原图、复制、复用参数 -->
+              <!-- 第 2 组操作 (移动端第 2 行 / PC端并排右侧)：在NAS打开、下载原图、复制、复用参数 -->
               <div class="flex items-center gap-1.5 sm:gap-2">
+                <button 
+                  @click="handleOpenInNas(genStore.currentImage)" 
+                  :disabled="openingNasId === genStore.currentImage?.id"
+                  class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 cursor-pointer disabled:opacity-50" 
+                  title="在 NAS 中打开此文件"
+                >
+                  <Loader2 v-if="openingNasId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+                  <FolderOpen v-else class="w-4 h-4 sm:w-5 sm:h-5" />
+                </button>
                 <button @click="downloadImage" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95" title="下载原图">
                   <Download class="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
@@ -2537,15 +2562,26 @@ watch(
                   </button>
                 </div>
 
-                <button 
-                  @click.stop="handleDeleteHistory(item.id)" 
-                  class="p-1.5 rounded-lg transition flex items-center gap-0.5 active:scale-95"
-                  :class="deletingHistoryId === item.id ? 'bg-red-600 text-white font-bold animate-pulse px-2' : 'text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40'"
-                  :title="deletingHistoryId === item.id ? '再次点击确认删除' : '删除'"
-                >
-                  <Trash2 class="w-3.5 h-3.5" />
-                  <span v-if="deletingHistoryId === item.id" class="text-[11px] font-bold">确定?</span>
-                </button>
+                <div class="flex items-center gap-1">
+                  <button 
+                    @click.stop="handleOpenInNas(item)" 
+                    :disabled="openingNasId === item.id"
+                    class="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition active:scale-95 cursor-pointer disabled:opacity-50"
+                    title="在 NAS 中打开此文件"
+                  >
+                    <Loader2 v-if="openingNasId === item.id" class="w-3.5 h-3.5 animate-spin" />
+                    <FolderOpen v-else class="w-3.5 h-3.5" />
+                  </button>
+                  <button 
+                    @click.stop="handleDeleteHistory(item.id)" 
+                    class="p-1.5 rounded-lg transition flex items-center gap-0.5 active:scale-95"
+                    :class="deletingHistoryId === item.id ? 'bg-red-600 text-white font-bold animate-pulse px-2' : 'text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40'"
+                    :title="deletingHistoryId === item.id ? '再次点击确认删除' : '删除'"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                    <span v-if="deletingHistoryId === item.id" class="text-[11px] font-bold">确定?</span>
+                  </button>
+                </div>
               </div>
             </div>
 

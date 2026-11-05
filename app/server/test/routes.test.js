@@ -240,4 +240,18 @@ describe('Express HTTP API & Routes In-Process Tests', () => {
     assert.equal(histRes.data.total, 1);
     assert.equal(histRes.data.history[0].isUpscaled, true);
   });
+
+  test('8. GET /profiles/images/disk-path resolves existing disk path and handles missing', async () => {
+    const profile = 'ArtProfile';
+    // Test resolving the image saved in test 7
+    const res = await invoke('GET', `/api/profiles/images/disk-path?profile=${profile}&id=upscaled-img-1`);
+    assert.equal(res.status, 200);
+    assert.equal(res.data.success, true);
+    assert.ok(typeof res.data.path === 'string');
+    assert.ok(fs.existsSync(res.data.path));
+
+    // Test missing image
+    const missingRes = await invoke('GET', `/api/profiles/images/disk-path?profile=${profile}&id=no_such_img_xyz`);
+    assert.equal(missingRes.status, 404);
+  });
 });
