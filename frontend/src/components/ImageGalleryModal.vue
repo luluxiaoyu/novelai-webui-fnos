@@ -822,15 +822,16 @@ const formatDateFull = (timestamp: number) => {
                 @mousedown.prevent="startDragSelect($event, item)"
                 @mouseenter="onDragEnter(item)"
                 @click="openDetail(item)"
-                class="group relative rounded-2xl overflow-hidden border-2 transition-all bg-white dark:bg-gray-900 cursor-pointer flex flex-col hover:shadow-md"
+                class="group relative rounded-2xl border-2 transition-all bg-white dark:bg-gray-900 cursor-pointer flex flex-col hover:shadow-md"
                 :class="[
+                  activeMenuId === item.id ? 'z-30' : 'z-0',
                   selectedIds.has(item.id) 
                     ? 'border-purple-600 shadow-[0_0_15px_rgba(147,51,234,0.3)] ring-2 ring-purple-400' 
                     : (genStore.currentImage?.id === item.id ? 'border-blue-500 shadow-md' : 'border-gray-200 dark:border-gray-800 hover:border-blue-300 dark:hover:border-blue-700')
                 ]"
               >
                 <!-- 缩略图容器 (点击直达大图透视) -->
-                <div class="relative w-full aspect-[2/3] bg-gray-100 dark:bg-gray-950 flex items-center justify-center overflow-hidden">
+                <div class="relative w-full aspect-[2/3] bg-gray-100 dark:bg-gray-950 flex items-center justify-center overflow-hidden rounded-t-[14px]">
                   <img 
                     :src="item.url" 
                     loading="lazy"
@@ -866,7 +867,7 @@ const formatDateFull = (timestamp: number) => {
                 </div>
 
                 <!-- 底部常驻信息与操作栏 (移动端直观可点，绝不依赖 Hover) -->
-                <div v-if="viewMode === 'grid'" class="p-2.5 bg-white dark:bg-gray-900 flex flex-col gap-1.5 border-t border-gray-100 dark:border-gray-800 text-xs">
+                <div v-if="viewMode === 'grid'" class="p-2.5 bg-white dark:bg-gray-900 flex flex-col gap-1.5 border-t border-gray-100 dark:border-gray-800 text-xs rounded-b-[14px]">
                   <div class="truncate font-mono text-gray-600 dark:text-gray-300 text-[11px]" :title="getDisplayPrompt(item)">
                     {{ getDisplayPrompt(item) || '无提示词' }}
                   </div>
@@ -918,11 +919,11 @@ const formatDateFull = (timestamp: number) => {
                           <FolderOpen v-else class="w-3.5 h-3.5" />
                         </button>
 
-                        <!-- 下拉菜单 (向上弹出) -->
+                        <!-- 下拉菜单 (向下弹出) -->
                         <div 
                           v-if="activeMenuId === item.id"
                           @click.stop
-                          class="absolute bottom-full right-0 mb-1.5 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-30 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                          class="absolute top-full right-0 mt-1.5 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
                         >
                           <button 
                             type="button"

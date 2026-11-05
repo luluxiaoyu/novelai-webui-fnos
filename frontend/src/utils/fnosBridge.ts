@@ -75,11 +75,28 @@ export async function openFnOSAppSetting(): Promise<{ success: boolean; error?: 
   }
 }
 
+export function getParentFolderPath(filePath: string): string {
+  if (!filePath) return '';
+  const normalized = filePath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const lastSlash = normalized.lastIndexOf('/');
+  if (lastSlash > 0) {
+    return normalized.substring(0, lastSlash);
+  } else if (lastSlash === 0) {
+    return '/';
+  }
+  return normalized;
+}
+
 export async function openFnOSFileManager(targetPath: string): Promise<{ success: boolean; error?: string }> {
   try {
     if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统桌面端内支持直接打开文件管理器' };
     const app = await ready();
-    await app.openFileManager(targetPath);
+    // 飞牛文件管理器仅接受目录路径，若传入带文件扩展名的路径则剥离文件名
+    let dirPath = targetPath;
+    if (/\.[a-zA-Z0-9]{2,6}$/.test(dirPath)) {
+      dirPath = getParentFolderPath(dirPath);
+    }
+    await app.openFileManager(dirPath);
     return { success: true };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : '打开文件管理器失败' };
@@ -139,7 +156,10 @@ export async function openNasImageFile(profile: string, item: { url?: string; id
 export async function openNasImageFolder(profile: string, item: { url?: string; id?: string }): Promise<{ success: boolean; message?: string }> {
   try {
     const diskPath = await getNasImageDiskPath(profile, item);
-    const folderPath = diskPath.includes('/') ? diskPath.substring(0, diskPath.lastIndexOf('/')) : diskPath;
+    const folderPath = getParentFolderPath(diskPath);
+    if (!folderPath) {
+      return { success: false, message: '无法解析所在文件夹路径' };
+    }
     if (!isInsideFnOS()) {
       try {
         await navigator.clipboard.writeText(folderPath);
@@ -148,14 +168,11 @@ export async function openNasImageFolder(profile: string, item: { url?: string; 
         return { success: false, message: `NAS 文件夹路径: ${folderPath}` };
       }
     }
-    let openRes = await openFnOSFileManager(diskPath);
-    if (!openRes.success) {
-      openRes = await openFnOSFileManager(folderPath);
-    }
+    const openRes = await openFnOSFileManager(folderPath);
     if (!openRes.success) {
       return { success: false, message: openRes.error || '打开文件管理器失败' };
     }
-    return { success: true, message: '已在文件管理器中定位' };
+    return { success: true, message: '已在文件管理器中定位文件夹' };
   } catch (err: any) {
     return { success: false, message: err.message || '定位文件夹失败' };
   }
