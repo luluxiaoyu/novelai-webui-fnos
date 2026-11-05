@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const path = require('path');
+const fs = require('fs');
 const axios = require('axios');
 const { getConfig, updateConfig, DEFAULT_IMAGE_SUBDIR_PATTERN } = require('./configManager');
 const { queueManager } = require('./queueManager');
@@ -266,6 +267,68 @@ router.get('/storage/merge-status', (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message || '获取合并状态失败' });
+  }
+});
+
+// Serve raw image from NAS disk for Upscale, Img2Img, or Metadata inspection
+router.get('/storage/raw-image', (req, res) => {
+  try {
+    const rawPath = req.query.path;
+    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
+      return res.status(400).json({ error: '请提供有效的文件路径' });
+    }
+    const trimmedPath = rawPath.trim();
+    if (!path.isAbsolute(trimmedPath) || trimmedPath.includes('\0') || trimmedPath.split(/[\\/]/).includes('..')) {
+      return res.status(400).json({ error: '无效的文件路径，必须为无跳转符号的绝对路径' });
+    }
+    const cleanPath = path.resolve(trimmedPath);
+
+    // Whitelist image extensions
+    const ext = path.extname(cleanPath).toLowerCase();
+    const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.webp'];
+    if (!ALLOWED_EXTS.includes(ext)) {
+      return res.status(400).json({ error: '仅支持读取图片文件 (.png, .jpg, .jpeg, .webp)' });
+    }
+
+    // Security: Disallow sensitive system prefixes
+    const forbiddenPrefixes = ['/proc', '/sys', '/dev', '/etc', '/run', '/boot', '/root'];
+    if (forbiddenPrefixes.some(prefix => cleanPath === prefix || cleanPath.startsWith(prefix + '/'))) {
+      return res.status(403).json({ error: '禁止访问系统敏感目录' });
+    }
+
+    // Check existence and read permissions
+    let stat;
+    try {
+      stat = fs.statSync(cleanPath);
+    } catch (statErr) {
+      if (statErr.code === 'ENOENT') {
+        return res.status(404).json({ error: '指定的文件不存在' });
+      }
+      return res.status(403).json({ error: '无权读取该文件，请确认飞牛系统访问权限' });
+    }
+
+    if (!stat.isFile()) {
+      return res.status(400).json({ error: '指定的路径不是一个有效文件' });
+    }
+
+    try {
+      fs.accessSync(cleanPath, fs.constants.R_OK);
+    } catch (accErr) {
+      return res.status(403).json({ error: '无权读取该文件，请确认飞牛系统访问权限' });
+    }
+
+    const mimeMap = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp'
+    };
+    res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.sendFile(cleanPath);
+  } catch (err) {
+    res.status(500).json({ error: err.message || '读取图片失败' });
   }
 });
 

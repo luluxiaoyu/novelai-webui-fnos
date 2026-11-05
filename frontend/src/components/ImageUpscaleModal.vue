@@ -3,9 +3,10 @@ import { ref, computed, watch } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useAuthStore } from '../stores/auth';
 import { resolveApiUrl } from '../utils/api';
+import { pickNasImage, fetchNasImageFile } from '../utils/fnosBridge';
 import { 
   X, Sparkles, UploadCloud, AlertCircle, Check, Loader2, 
-  ArrowRight, Image as ImageIcon, Zap, AlertTriangle, RefreshCw
+  ArrowRight, Image as ImageIcon, Zap, AlertTriangle, RefreshCw, FolderOpen
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -164,6 +165,27 @@ const onDrop = (e: DragEvent) => {
   }
 };
 
+const isPickingNas = ref(false);
+const handlePickNasFile = async () => {
+  errorMessage.value = '';
+  isPickingNas.value = true;
+  try {
+    const res = await pickNasImage();
+    if (res.canceled) return;
+    if (!res.success || !res.path) {
+      errorMessage.value = res.error || '从 NAS 选择图片失败';
+      return;
+    }
+    const file = await fetchNasImageFile(res.path);
+    activeTab.value = 'upload';
+    handleFile(file);
+  } catch (err: any) {
+    errorMessage.value = err.message || '加载 NAS 图片失败';
+  } finally {
+    isPickingNas.value = false;
+  }
+};
+
 // 辅助功能：一键将超限大图等比等面积缩放至 ≤ 1,048,576
 const isResizing = ref(false);
 const autoFitToLimit = () => {
@@ -305,8 +327,7 @@ const handleStartUpscale = async () => {
           @dragover.stop.prevent="isDragging = true"
           @dragleave.stop.prevent="isDragging = false"
           @drop.stop.prevent="onDrop"
-          @click="fileInputRef?.click()"
-          class="border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center gap-2.5 cursor-pointer transition text-center"
+          class="border-2 border-dashed rounded-xl p-7 flex flex-col items-center justify-center gap-3 transition text-center"
           :class="isDragging ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20' : 'border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-600 bg-gray-50/50 dark:bg-gray-950/30'"
         >
           <div class="w-10 h-10 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
@@ -315,6 +336,26 @@ const handleStartUpscale = async () => {
           <div>
             <p class="text-xs sm:text-sm font-medium text-gray-800 dark:text-gray-200">选择或拖拽图片至此处</p>
             <p class="text-[11px] text-gray-400 mt-0.5">支持 PNG、JPG、WEBP 格式</p>
+          </div>
+          <div class="flex items-center gap-2.5 mt-1">
+            <button 
+              type="button"
+              @click="fileInputRef?.click()"
+              class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+            >
+              <UploadCloud class="w-3.5 h-3.5" />
+              <span>本地上传</span>
+            </button>
+            <button 
+              type="button"
+              @click="handlePickNasFile"
+              :disabled="isPickingNas"
+              class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-medium transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Loader2 v-if="isPickingNas" class="w-3.5 h-3.5 animate-spin" />
+              <FolderOpen v-else class="w-3.5 h-3.5" />
+              <span>从 NAS 选择</span>
+            </button>
           </div>
         </div>
 
@@ -330,14 +371,24 @@ const handleStartUpscale = async () => {
             <div class="flex-1 min-w-0 flex flex-col justify-between py-0.5">
               <div class="flex items-center justify-between gap-1 mb-1.5">
                 <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">分辨率变更</span>
-                <button 
-                  v-if="activeTab === 'upload'" 
-                  @click="fileInputRef?.click()" 
-                  class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
-                >
-                  <RefreshCw class="w-3 h-3" />
-                  <span>更换图片</span>
-                </button>
+                <div v-if="activeTab === 'upload'" class="flex items-center gap-2">
+                  <button 
+                    @click="handlePickNasFile" 
+                    :disabled="isPickingNas"
+                    class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <Loader2 v-if="isPickingNas" class="w-3 h-3 animate-spin" />
+                    <FolderOpen v-else class="w-3 h-3" />
+                    <span>从 NAS 更换</span>
+                  </button>
+                  <button 
+                    @click="fileInputRef?.click()" 
+                    class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <RefreshCw class="w-3 h-3" />
+                    <span>本地更换</span>
+                  </button>
+                </div>
               </div>
 
               <!-- 对比徽章 -->

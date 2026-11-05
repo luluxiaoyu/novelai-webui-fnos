@@ -187,6 +187,10 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
         },
         send(data) {
           resolve({ status: statusCode, headers: resHeaders, data });
+        },
+        sendFile(filePath) {
+          const content = fs.readFileSync(filePath);
+          resolve({ status: statusCode, headers: resHeaders, data: content, filePath });
         }
       };
 
@@ -536,5 +540,43 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(item.exists, false);
     assert.equal(item.writable, false);
     assert.equal(item.isCurrent, true);
+  });
+
+  test('24. GET /storage/raw-image serves valid image with proper Content-Type', async () => {
+    const testImgDir = path.join(configManager.DATA_DIR, 'raw_img_test');
+    fs.mkdirSync(testImgDir, { recursive: true });
+    const pngPath = path.join(testImgDir, 'sample.png');
+    fs.writeFileSync(pngPath, Buffer.from('fake-png-bytes'));
+
+    const res = await invoke('GET', `/storage/raw-image?path=${encodeURIComponent(pngPath)}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers['content-type'], 'image/png');
+    assert.equal(res.filePath, pngPath);
+  });
+
+  test('25. GET /storage/raw-image rejects non-image, path traversal, or forbidden prefix with 400/403', async () => {
+    // Missing path
+    const emptyRes = await invoke('GET', '/storage/raw-image');
+    assert.equal(emptyRes.status, 400);
+
+    // Non-image extension (.json)
+    const jsonPath = path.join(configManager.DATA_DIR, 'test.json');
+    fs.writeFileSync(jsonPath, '{}');
+    const extRes = await invoke('GET', `/storage/raw-image?path=${encodeURIComponent(jsonPath)}`);
+    assert.equal(extRes.status, 400);
+
+    // Path traversal
+    const travRes = await invoke('GET', '/storage/raw-image?path=../../etc/passwd');
+    assert.equal(travRes.status, 400);
+
+    // Forbidden prefix
+    const etcRes = await invoke('GET', '/storage/raw-image?path=/etc/shadow.png');
+    assert.equal(etcRes.status, 403);
+  });
+
+  test('26. GET /storage/raw-image returns 404 for missing file', async () => {
+    const missingImg = path.join(configManager.DATA_DIR, 'non_existent.png');
+    const res = await invoke('GET', `/storage/raw-image?path=${encodeURIComponent(missingImg)}`);
+    assert.equal(res.status, 404);
   });
 });

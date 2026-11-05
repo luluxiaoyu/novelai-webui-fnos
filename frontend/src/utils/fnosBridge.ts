@@ -1,4 +1,5 @@
 import { TrimApp } from '@trimjs/web-app';
+import { resolveApiUrl } from './api';
 
 export interface FnosPickResult {
   supported: boolean;
@@ -72,6 +73,51 @@ export async function openFnOSAppSetting(): Promise<{ success: boolean; error?: 
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : '打开系统设置失败' };
   }
+}
+
+export async function openFnOSFileManager(targetPath: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统桌面端内支持直接打开文件管理器' };
+    const app = await ready();
+    await app.openFileManager(targetPath);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : '打开文件管理器失败' };
+  }
+}
+
+export async function pickNasImage(): Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }> {
+  if (!isInsideFnOS()) return { success: false, error: '请在飞牛系统桌面端内使用此功能' };
+  try {
+    const app = await ready();
+    const files = await app.pickFile({
+      accept: ['.png', '.jpg', '.jpeg', '.webp'],
+      sidebarGroup: ['myFiles', 'otherShare', 'favorites'],
+      title: '从 NAS 选择图片'
+    });
+    if (!files || files.length === 0) {
+      return { success: false, canceled: true };
+    }
+    return { success: true, path: files[0] };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : '选择图片失败' };
+  }
+}
+
+export async function fetchNasImageFile(targetPath: string): Promise<File> {
+  const url = resolveApiUrl(`/api/storage/raw-image?path=${encodeURIComponent(targetPath)}`);
+  const response = await fetch(url);
+  if (!response.ok) {
+    let errMsg = `读取图片失败 (HTTP ${response.status})`;
+    try {
+      const json = await response.json();
+      if (json.error) errMsg = json.error;
+    } catch {}
+    throw new Error(errMsg);
+  }
+  const blob = await response.blob();
+  const filename = targetPath.split('/').filter(Boolean).pop() || 'nas_image.png';
+  return new File([blob], filename, { type: blob.type || 'image/png' });
 }
 
 export async function openAppAuthRoute(): Promise<{ success: boolean; error?: string }> {

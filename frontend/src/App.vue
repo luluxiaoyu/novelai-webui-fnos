@@ -19,6 +19,7 @@ import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
 import ProfileDropdown from './components/ProfileDropdown.vue';
 import WelcomeSetupModal from './components/WelcomeSetupModal.vue';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
+import { pickNasImage, fetchNasImageFile } from './utils/fnosBridge';
 import { Sun, Moon, Download, Copy, Loader2, Image as ImageIcon, X, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink } from 'lucide-vue-next';
 
 const authStore = useAuthStore();
@@ -917,6 +918,26 @@ const handleImageUpload = (e: Event) => {
   if (file) {
     handleDroppedFile(file);
     (e.target as HTMLInputElement).value = '';
+  }
+};
+
+const isPickingNasImage = ref(false);
+const handlePickNasImageForInspection = async () => {
+  if (isPickingNasImage.value) return;
+  isPickingNasImage.value = true;
+  try {
+    const res = await pickNasImage();
+    if (res.canceled) return;
+    if (!res.success || !res.path) {
+      if (res.error) alert(res.error);
+      return;
+    }
+    const file = await fetchNasImageFile(res.path);
+    await handleDroppedFile(file);
+  } catch (err: any) {
+    alert(err.message || '加载 NAS 图片失败');
+  } finally {
+    isPickingNasImage.value = false;
   }
 };
 
@@ -2136,7 +2157,20 @@ watch(
           
           <div class="flex flex-col gap-2 text-xs">
             <div>
-              <span class="text-gray-500 mb-1 block">上传底图:</span>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-gray-500">上传底图:</span>
+                <button 
+                  type="button" 
+                  @click="handlePickNasImageForInspection"
+                  :disabled="isPickingNasImage"
+                  class="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 text-xs flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+                  title="从飞牛 NAS 选择图片进行元数据提取、图生图或局部重绘"
+                >
+                  <Loader2 v-if="isPickingNasImage" class="w-3.5 h-3.5 animate-spin" />
+                  <FolderOpen v-else class="w-3.5 h-3.5" />
+                  <span>从 NAS 选择</span>
+                </button>
+              </div>
               <input type="file" accept="image/*" @change="handleImageUpload" class="text-xs file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-xs file:bg-gray-100 dark:file:bg-gray-800 file:text-gray-700 dark:file:text-gray-200 cursor-pointer w-full" />
             </div>
 

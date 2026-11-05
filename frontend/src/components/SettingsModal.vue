@@ -5,13 +5,13 @@ import { useProfileStore } from '../stores/profile';
 import { useGenerationStore } from '../stores/generation';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
 import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '../utils/mobilePerf';
-import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting, openAppAuthRoute, onDirectoryAuthorization, type FnosAppAuthResult } from '../utils/fnosBridge';
+import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting, openFnOSFileManager, openAppAuthRoute, onDirectoryAuthorization, type FnosAppAuthResult } from '../utils/fnosBridge';
 import CustomSelect from './CustomSelect.vue';
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
   ShieldCheck, Cpu, FileText, Sun, Moon, 
   Trash2, Edit3, Plus, Eye, EyeOff, Smartphone, FolderTree,
-  SlidersHorizontal, FolderArchive, RefreshCw, FolderPlus, ExternalLink,
+  SlidersHorizontal, FolderArchive, RefreshCw, FolderPlus, FolderOpen, ExternalLink,
   GitMerge, ArrowRightLeft, CheckCircle2
 } from 'lucide-vue-next';
 
@@ -147,6 +147,7 @@ const isValidatingPath = ref(false);
 const pathValidationResult = ref<{ success: boolean; message?: string; error?: string } | null>(null);
 const isSwitchingPath = ref(false);
 const isPickingDirectory = ref(false);
+const isOpeningFileManager = ref(false);
 const isOpeningAppSetting = ref(false);
 const appSettingActionFeedback = ref<{ success: boolean; message: string } | null>(null);
 const originalStoragePath = ref('');
@@ -468,6 +469,53 @@ const acceptAuthorization = async (result: FnosAppAuthResult, revision: number |
     appSettingActionFeedback.value = { success: true, message: '目录已授权，请检查候选目录后点击“应用切换”' };
   } else if (result.status === 'error') {
     appSettingActionFeedback.value = { success: false, message: result.error || '目录授权失败' };
+  }
+};
+
+const handleOpenDataFolder = async () => {
+  if (!originalStoragePath.value) return;
+  isOpeningFileManager.value = true;
+  appSettingActionFeedback.value = null;
+  try {
+    const res = await openFnOSFileManager(originalStoragePath.value);
+    if (!res.success) {
+      if (!isInsideFnOS()) {
+        try {
+          await navigator.clipboard.writeText(originalStoragePath.value);
+          appSettingActionFeedback.value = {
+            success: true,
+            message: '已复制存储目录路径到剪贴板（在独立浏览器中无法直接呼出飞牛桌面窗口）'
+          };
+        } catch {
+          appSettingActionFeedback.value = {
+            success: false,
+            message: `存储目录路径：${originalStoragePath.value}`
+          };
+        }
+      } else {
+        appSettingActionFeedback.value = {
+          success: false,
+          message: res.error || '打开文件管理器失败'
+        };
+      }
+    } else {
+      appSettingActionFeedback.value = {
+        success: true,
+        message: '已在飞牛系统文件管理器中打开目录'
+      };
+    }
+  } catch (err: any) {
+    appSettingActionFeedback.value = {
+      success: false,
+      message: err.message || '打开文件管理器失败'
+    };
+  } finally {
+    isOpeningFileManager.value = false;
+    setTimeout(() => {
+      if (appSettingActionFeedback.value?.success) {
+        appSettingActionFeedback.value = null;
+      }
+    }, 4000);
   }
 };
 
@@ -824,6 +872,12 @@ const handleDeleteProfile = async (name: string) => {
                 <p class="text-xs text-gray-500 dark:text-gray-400">保存生图历史、角色库及存档；选择后需点击应用切换。</p>
               </div>
               <div class="flex flex-wrap gap-2">
+                <button type="button" @click="handleOpenDataFolder" :disabled="!originalStoragePath || isOpeningFileManager"
+                  class="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                  title="在飞牛系统文件管理器中打开当前存储目录">
+                  <Loader2 v-if="isOpeningFileManager" class="w-3.5 h-3.5 animate-spin" /><FolderOpen v-else class="w-3.5 h-3.5" />
+                  打开目录
+                </button>
                 <button type="button" @click="handlePickOrAuthorize" :disabled="!canManageStorage || isPickingDirectory || isSwitchingPath || isMerging"
                   class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs flex items-center gap-1.5 disabled:opacity-50">
                   <Loader2 v-if="isPickingDirectory" class="w-3.5 h-3.5 animate-spin" /><FolderPlus v-else class="w-3.5 h-3.5" />
