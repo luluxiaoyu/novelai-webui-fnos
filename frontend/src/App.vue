@@ -952,6 +952,48 @@ const handlePickNasImageForInspection = async () => {
 const openingNasId = ref<string | null>(null);
 const activeCanvasNasMenu = ref(false);
 const activeSidebarNasMenuId = ref<string | null>(null);
+const canvasNasMenuPlacement = ref<'top' | 'bottom'>('top');
+const canvasFolderButtonRef = ref<HTMLElement | null>(null);
+
+const toggleCanvasNasMenu = (e?: MouseEvent) => {
+  if (activeCanvasNasMenu.value) {
+    activeCanvasNasMenu.value = false;
+    return;
+  }
+  const target = (e?.currentTarget as HTMLElement) || canvasFolderButtonRef.value;
+  if (target) {
+    const rect = target.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    // 菜单高度约 85px，如果下方高度小于 120px 且上方空间充裕，则上拉弹出，否则下拉
+    if (spaceBelow < 120 && spaceAbove > spaceBelow) {
+      canvasNasMenuPlacement.value = 'top';
+    } else {
+      canvasNasMenuPlacement.value = 'bottom';
+    }
+  } else {
+    canvasNasMenuPlacement.value = 'top';
+  }
+  activeCanvasNasMenu.value = true;
+};
+
+const sidebarMenuPlacementMap = ref<Record<string, 'top' | 'bottom'>>({});
+const toggleSidebarNasMenu = (id: string, e?: MouseEvent) => {
+  if (activeSidebarNasMenuId.value === id) {
+    activeSidebarNasMenuId.value = null;
+    return;
+  }
+  const target = e?.currentTarget as HTMLElement;
+  if (target) {
+    const rect = target.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    sidebarMenuPlacementMap.value[id] = (spaceBelow < 110 && spaceAbove > spaceBelow) ? 'top' : 'bottom';
+  } else {
+    sidebarMenuPlacementMap.value[id] = 'bottom';
+  }
+  activeSidebarNasMenuId.value = id;
+};
 
 const handleOpenFile = async (img: any) => {
   if (!img || openingNasId.value === img.id) return;
@@ -2417,11 +2459,11 @@ watch(
 
               <!-- 第 2 组操作 (移动端第 2 行 / PC端并排右侧)：在NAS打开、下载原图、复制、复用参数 -->
               <div class="flex items-center gap-1.5 sm:gap-2">
-                <!-- 文件夹下拉操作菜单 -->
-                <div class="relative">
+                <!-- 文件夹下拉操作菜单 (仅在 iframe 宿主环境内展示，外部独立浏览器隐藏) -->
+                <div v-if="isInIframe" class="relative" ref="canvasFolderButtonRef">
                   <button 
                     type="button"
-                    @click.stop="activeCanvasNasMenu = !activeCanvasNasMenu" 
+                    @click.stop="toggleCanvasNasMenu($event)" 
                     :disabled="openingNasId === genStore.currentImage?.id"
                     class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 cursor-pointer disabled:opacity-50" 
                     :class="activeCanvasNasMenu ? 'ring-2 ring-blue-500 text-blue-600 dark:text-blue-400' : ''"
@@ -2431,11 +2473,12 @@ watch(
                     <FolderOpen v-else class="w-4 h-4 sm:w-5 sm:h-5" />
                   </button>
 
-                  <!-- 下拉菜单 (PC端向上面弹出，移动端在顶部向下面弹出) -->
+                  <!-- 下拉菜单 (视视口剩余空间动态选择上拉或下拉，杜绝被屏幕边缘遮挡) -->
                   <div 
                     v-if="activeCanvasNasMenu"
                     @click.stop
-                    class="absolute sm:bottom-full sm:mb-2 top-full mt-2 right-0 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                    class="absolute right-0 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                    :class="canvasNasMenuPlacement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'"
                   >
                     <button 
                       type="button"
@@ -2655,11 +2698,11 @@ watch(
                 </div>
 
                 <div class="flex items-center gap-1">
-                  <!-- 文件夹下拉操作菜单 -->
-                  <div class="relative">
+                  <!-- 文件夹下拉操作菜单 (仅在 iframe 宿主环境内展示) -->
+                  <div v-if="isInIframe" class="relative">
                     <button 
                       type="button"
-                      @click.stop="activeSidebarNasMenuId = activeSidebarNasMenuId === item.id ? null : item.id" 
+                      @click.stop="toggleSidebarNasMenu(item.id, $event)" 
                       :disabled="openingNasId === item.id"
                       class="p-1.5 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
                       :class="activeSidebarNasMenuId === item.id ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/60 dark:text-blue-300' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40'"
@@ -2669,11 +2712,12 @@ watch(
                       <FolderOpen v-else class="w-3.5 h-3.5" />
                     </button>
 
-                    <!-- 下拉菜单 (向下弹出) -->
+                    <!-- 下拉菜单 (视空间动态选择上拉或下拉) -->
                     <div 
                       v-if="activeSidebarNasMenuId === item.id"
                       @click.stop
-                      class="absolute top-full right-0 mt-1.5 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                      class="absolute right-0 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                      :class="sidebarMenuPlacementMap[item.id] === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'"
                     >
                       <button 
                         type="button"

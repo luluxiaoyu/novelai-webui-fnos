@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useProfileStore } from '../stores/profile';
-import { openNasImageFile, openNasImageFolder, setFnOSExitPageTips } from '../utils/fnosBridge';
+import { isInsideFnOS, openNasImageFile, openNasImageFolder, setFnOSExitPageTips } from '../utils/fnosBridge';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { 
@@ -418,6 +418,24 @@ const toggleGroupSelection = (groupImages: GeneratedImage[]) => {
 const profileStore = useProfileStore();
 const openingNasId = ref<string | null>(null);
 const activeMenuId = ref<string | null>(null);
+const galleryMenuPlacementMap = ref<Record<string, 'top' | 'bottom'>>({});
+
+const toggleGalleryNasMenu = (id: string, e?: MouseEvent) => {
+  if (activeMenuId.value === id) {
+    activeMenuId.value = null;
+    return;
+  }
+  const target = e?.currentTarget as HTMLElement;
+  if (target) {
+    const rect = target.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    galleryMenuPlacementMap.value[id] = (spaceBelow < 110 && spaceAbove > spaceBelow) ? 'top' : 'bottom';
+  } else {
+    galleryMenuPlacementMap.value[id] = 'bottom';
+  }
+  activeMenuId.value = id;
+};
 
 const handleOpenFile = async (img: GeneratedImage | null) => {
   if (!img || openingNasId.value === img.id) return;
@@ -923,12 +941,12 @@ const formatDateFull = (timestamp: number) => {
                       </button>
                     </div>
 
-                    <div class="flex items-center gap-1">
-                      <!-- 文件夹下拉操作菜单 -->
+                    <div v-if="isInsideFnOS()" class="flex items-center gap-1">
+                      <!-- 文件夹下拉操作菜单 (仅在 iframe 宿主环境内展示) -->
                       <div class="relative">
                         <button 
                           type="button"
-                          @click.stop="activeMenuId = activeMenuId === item.id ? null : item.id"
+                          @click.stop="toggleGalleryNasMenu(item.id, $event)"
                           :disabled="openingNasId === item.id"
                           class="p-1 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
                           :class="activeMenuId === item.id ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/60 dark:text-blue-300' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-800'"
@@ -938,11 +956,12 @@ const formatDateFull = (timestamp: number) => {
                           <FolderOpen v-else class="w-3.5 h-3.5" />
                         </button>
 
-                        <!-- 下拉菜单 (向下弹出) -->
+                        <!-- 下拉菜单 (视视口剩余空间动态选择上拉或下拉) -->
                         <div 
                           v-if="activeMenuId === item.id"
                           @click.stop
-                          class="absolute top-full right-0 mt-1.5 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                          class="absolute right-0 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                          :class="galleryMenuPlacementMap[item.id] === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'"
                         >
                           <button 
                             type="button"
@@ -1134,26 +1153,28 @@ const formatDateFull = (timestamp: number) => {
 
             <!-- 右侧操作 -->
             <div class="flex items-center gap-2">
-              <button 
-                @click="handleOpenFile(selectedImage)"
-                :disabled="openingNasId === selectedImage.id"
-                class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
-                title="在 NAS 打开文件"
-              >
-                <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
-                <FileImage v-else class="w-3.5 h-3.5 text-blue-400" />
-                <span>在NAS打开文件</span>
-              </button>
-              <button 
-                @click="handleOpenFolder(selectedImage)"
-                :disabled="openingNasId === selectedImage.id"
-                class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
-                title="定位文件夹"
-              >
-                <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
-                <FolderSearch v-else class="w-3.5 h-3.5 text-emerald-400" />
-                <span>定位文件夹</span>
-              </button>
+              <template v-if="isInsideFnOS()">
+                <button 
+                  @click="handleOpenFile(selectedImage)"
+                  :disabled="openingNasId === selectedImage.id"
+                  class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                  title="在 NAS 打开文件"
+                >
+                  <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
+                  <FileImage v-else class="w-3.5 h-3.5 text-blue-400" />
+                  <span>在NAS打开文件</span>
+                </button>
+                <button 
+                  @click="handleOpenFolder(selectedImage)"
+                  :disabled="openingNasId === selectedImage.id"
+                  class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                  title="定位文件夹"
+                >
+                  <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
+                  <FolderSearch v-else class="w-3.5 h-3.5 text-emerald-400" />
+                  <span>定位文件夹</span>
+                </button>
+              </template>
               <button 
                 @click="downloadSingleImage(selectedImage)"
                 class="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1.5 text-xs active:scale-95 shadow-sm cursor-pointer"
@@ -1184,24 +1205,26 @@ const formatDateFull = (timestamp: number) => {
                 <span class="text-[11px] text-gray-400 font-mono">{{ formatDateFull(selectedImage.timestamp) }}</span>
               </div>
               <div class="flex items-center gap-1">
-                <button 
-                  @click="handleOpenFile(selectedImage)"
-                  :disabled="openingNasId === selectedImage.id"
-                  class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition cursor-pointer disabled:opacity-50"
-                  title="在 NAS 打开文件"
-                >
-                  <Loader2 v-if="openingNasId === selectedImage.id" class="w-4 h-4 animate-spin" />
-                  <FileImage v-else class="w-4 h-4 text-blue-500" />
-                </button>
-                <button 
-                  @click="handleOpenFolder(selectedImage)"
-                  :disabled="openingNasId === selectedImage.id"
-                  class="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-xl transition cursor-pointer disabled:opacity-50"
-                  title="定位文件夹"
-                >
-                  <Loader2 v-if="openingNasId === selectedImage.id" class="w-4 h-4 animate-spin" />
-                  <FolderSearch v-else class="w-4 h-4 text-emerald-500" />
-                </button>
+                <template v-if="isInsideFnOS()">
+                  <button 
+                    @click="handleOpenFile(selectedImage)"
+                    :disabled="openingNasId === selectedImage.id"
+                    class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition cursor-pointer disabled:opacity-50"
+                    title="在 NAS 打开文件"
+                  >
+                    <Loader2 v-if="openingNasId === selectedImage.id" class="w-4 h-4 animate-spin" />
+                    <FileImage v-else class="w-4 h-4 text-blue-500" />
+                  </button>
+                  <button 
+                    @click="handleOpenFolder(selectedImage)"
+                    :disabled="openingNasId === selectedImage.id"
+                    class="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-xl transition cursor-pointer disabled:opacity-50"
+                    title="定位文件夹"
+                  >
+                    <Loader2 v-if="openingNasId === selectedImage.id" class="w-4 h-4 animate-spin" />
+                    <FolderSearch v-else class="w-4 h-4 text-emerald-500" />
+                  </button>
+                </template>
                 <button 
                   @click="deleteSingle(selectedImage)"
                   class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition cursor-pointer"

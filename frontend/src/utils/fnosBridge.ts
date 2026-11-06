@@ -29,7 +29,15 @@ export function getTrimApp(): TrimApp {
 }
 
 export function isInsideFnOS(): boolean {
-  return typeof window !== 'undefined' && !getTrimApp().isStandaloneWeb;
+  if (typeof window === 'undefined') return false;
+  try {
+    if (window.self === window.top) {
+      return false;
+    }
+  } catch {
+    return true;
+  }
+  return !getTrimApp().isStandaloneWeb;
 }
 
 async function ready(): Promise<TrimApp> {
