@@ -781,8 +781,11 @@ const formatDateFull = (timestamp: number) => {
         </div>
       </div>
 
-      <!-- 主图库展示流 -->
-      <div class="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6 bg-gray-100/60 dark:bg-gray-950/60">
+      <!-- 主图库展示流 (GPU独立分层隔离，杜绝快速滚动丢帧与全局重绘) -->
+      <div 
+        class="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6 bg-gray-100 dark:bg-gray-950"
+        style="will-change: scroll-position; transform: translateZ(0);"
+      >
         <!-- 读取中状态 -->
         <div v-if="genStore.isLoadingHistory" class="h-full flex flex-col items-center justify-center py-24 text-center text-gray-400">
           <Loader2 class="w-10 h-10 animate-spin text-blue-500 mb-3" />
@@ -836,7 +839,8 @@ const formatDateFull = (timestamp: number) => {
                 @mousedown.prevent="startDragSelect($event, item)"
                 @mouseenter="onDragEnter(item)"
                 @click="openDetail(item)"
-                class="group relative rounded-2xl border-2 transition-all bg-white dark:bg-gray-900 cursor-pointer flex flex-col hover:shadow-md"
+                class="group relative rounded-2xl border-2 transition-colors duration-150 bg-white dark:bg-gray-900 cursor-pointer flex flex-col hover:shadow-md"
+                style="content-visibility: auto; contain-intrinsic-size: 200px 320px;"
                 :class="[
                   activeMenuId === item.id ? 'z-30' : 'z-0',
                   selectedIds.has(item.id) 
@@ -849,15 +853,16 @@ const formatDateFull = (timestamp: number) => {
                   <img 
                     :src="item.url" 
                     loading="lazy"
+                    decoding="async"
                     draggable="false"
-                    class="w-full h-full object-contain transition-transform duration-300 group-hover:scale-102" 
+                    class="w-full h-full object-contain transition-transform duration-200 group-hover:scale-102" 
                   />
 
                   <!-- 多选复选框 -->
                   <div 
                     v-if="isBatchMode" 
                     @click.stop="toggleSelect(item.id)"
-                    class="absolute top-2 left-2 z-20 p-1.5 rounded-lg bg-black/70 backdrop-blur-sm text-white shadow"
+                    class="absolute top-2 left-2 z-20 p-1.5 rounded-lg bg-black/75 text-white shadow"
                   >
                     <CheckSquare v-if="selectedIds.has(item.id)" class="w-4 h-4 text-purple-400" />
                     <Square v-else class="w-4 h-4 text-gray-300" />
@@ -866,17 +871,17 @@ const formatDateFull = (timestamp: number) => {
                   <!-- 超分标识 Tag -->
                   <div 
                     v-if="isImageUpscaled(item)" 
-                    class="absolute top-2 z-10 bg-amber-500/90 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded backdrop-blur-sm pointer-events-none flex items-center gap-0.5 shadow-sm border border-amber-300/40"
+                    class="absolute top-2 z-10 bg-amber-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded pointer-events-none flex items-center gap-0.5 shadow-sm border border-amber-300/40"
                     :class="isBatchMode ? 'right-2' : 'left-2'"
                   >
                     <Maximize2 class="w-2.5 h-2.5" />
                     <span>超分</span>
                   </div>
 
-                  <!-- 尺寸与时间徽章 -->
+                  <!-- 尺寸与时间徽章 (采用实色半透明背景，消除数百个高斯模糊Shader通道造成的GPU帧缓冲溢出) -->
                   <div class="absolute bottom-1.5 left-1.5 right-1.5 flex justify-between items-center text-[9px] font-mono text-white pointer-events-none z-10">
-                    <span class="bg-black/65 px-1.5 py-0.5 rounded backdrop-blur-sm shadow-sm">{{ item.params.width }}x{{ item.params.height }}</span>
-                    <span class="bg-black/65 px-1.5 py-0.5 rounded backdrop-blur-sm shadow-sm">{{ formatTime(item.timestamp) }}</span>
+                    <span class="bg-black/75 px-1.5 py-0.5 rounded shadow-sm">{{ item.params.width }}x{{ item.params.height }}</span>
+                    <span class="bg-black/75 px-1.5 py-0.5 rounded shadow-sm">{{ formatTime(item.timestamp) }}</span>
                   </div>
                 </div>
 

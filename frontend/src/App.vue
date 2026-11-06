@@ -2593,7 +2593,8 @@ watch(
             <div 
               v-for="item in displayedSidebarHistory" 
               :key="item.id"
-              class="group relative w-full shrink-0 rounded-xl border-2 transition-all bg-gray-50 dark:bg-gray-950 flex flex-col animate-fade-in"
+              class="group relative w-full shrink-0 rounded-xl border-2 transition-colors duration-150 bg-gray-50 dark:bg-gray-950 flex flex-col animate-fade-in"
+              style="content-visibility: auto; contain-intrinsic-size: 150px 220px;"
               :class="[
                 activeSidebarNasMenuId === item.id ? 'z-30' : 'z-0',
                 genStore.currentImage?.id === item.id ? 'border-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]' : 'border-gray-200/80 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700'
@@ -2608,21 +2609,21 @@ watch(
                 <!-- 未读标签指示器 -->
                 <div v-if="item.isNew" class="absolute top-2 right-2 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20 pointer-events-none tracking-widest border border-blue-400/50" style="text-indent: 0.1em;">新</div>
                 
-                <!-- 超分标识 Tag -->
+                <!-- 超分标识 Tag (移除backdrop-blur以提升列表极速滚动合成性能) -->
                 <div 
                   v-if="isImageUpscaled(item)" 
-                  class="absolute top-2 left-2 bg-amber-500/90 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded backdrop-blur-sm z-20 pointer-events-none flex items-center gap-0.5 shadow-sm border border-amber-300/40"
+                  class="absolute top-2 left-2 bg-amber-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded z-20 pointer-events-none flex items-center gap-0.5 shadow-sm border border-amber-300/40"
                 >
                   <Maximize2 class="w-2.5 h-2.5" />
                   <span>超分</span>
                 </div>
 
                 <!-- 尺寸信息标签 -->
-                <div class="absolute bottom-1.5 left-2 bg-black/60 text-white text-[9px] font-mono px-1.5 py-0.5 rounded backdrop-blur-sm pointer-events-none z-10">
+                <div class="absolute bottom-1.5 left-2 bg-black/75 text-white text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none z-10">
                   {{ item.params.width }}x{{ item.params.height }}
                 </div>
 
-                <img :src="item.url" loading="lazy" decoding="async" class="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105" />
+                <img :src="item.url" loading="lazy" decoding="async" class="w-full h-full object-contain transition-transform duration-200 group-hover:scale-102" />
               </div>
               
               <!-- 卡片底部独立操作栏 (纯图标精简布局，彻底杜绝文字折行挤压) -->
