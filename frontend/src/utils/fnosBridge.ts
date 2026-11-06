@@ -263,3 +263,55 @@ export function onDirectoryAuthorization(callback: (result: FnosAppAuthResult) =
   window.addEventListener('message', listener);
   return () => window.removeEventListener('message', listener);
 }
+
+/**
+ * 设置或清除飞牛系统退出页面提示
+ * 当传入 params 时启用提示；未传参或传 null/undefined 时清除提示
+ */
+export async function setFnOSExitPageTips(params?: { title?: string; content?: string } | null): Promise<void> {
+  if (!isInsideFnOS()) return;
+  try {
+    const app = await ready();
+    if (params) {
+      await app.setExitPageTips({
+        title: params.title || '任务进行中',
+        content: params.content || '当前任务尚未完成，确认退出可能导致数据丢失或中断。'
+      });
+    } else {
+      await app.setExitPageTips();
+    }
+  } catch (err) {
+    console.warn('[fnOS] Failed to setExitPageTips:', err);
+  }
+}
+
+/**
+ * 初始化并监听飞牛系统日间/夜间主题同步
+ */
+export async function syncFnOSTheme(onThemeChange: (isDark: boolean) => void): Promise<(() => void) | undefined> {
+  if (!isInsideFnOS()) return;
+  try {
+    const app = await ready();
+    const config = await app.getPlatformConfig();
+    if (config?.theme) {
+      onThemeChange(config.theme === 'dark');
+    }
+
+    const handler = (theme: any) => {
+      const isDark = typeof theme === 'string' ? theme === 'dark' : (theme?.theme === 'dark' || Boolean(theme?.dark));
+      onThemeChange(isDark);
+    };
+
+    try {
+      await app.$on('os/theme', handler);
+      return () => {
+        try { app.$off('os/theme', handler); } catch {}
+      };
+    } catch {
+      // Event bus might not be available on older runtimes
+    }
+  } catch (err) {
+    console.warn('[fnOS] Failed to sync platform theme:', err);
+  }
+}
+

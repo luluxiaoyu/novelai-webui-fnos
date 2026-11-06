@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onUnmounted } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useAuthStore } from '../stores/auth';
 import { resolveApiUrl } from '../utils/api';
-import { pickNasImage, fetchNasImageFile } from '../utils/fnosBridge';
+import { isInsideFnOS, pickNasImage, fetchNasImageFile, setFnOSExitPageTips } from '../utils/fnosBridge';
 import { 
   X, Sparkles, UploadCloud, AlertCircle, Check, Loader2, 
   ArrowRight, Image as ImageIcon, Zap, AlertTriangle, RefreshCw, FolderOpen
@@ -256,6 +256,23 @@ const handleStartUpscale = async () => {
     errorMessage.value = err.message || '超分辨率处理失败';
   }
 };
+
+watch(() => genStore.isUpscaling, (val) => {
+  if (val) {
+    setFnOSExitPageTips({
+      title: '正在放大图片',
+      content: 'AI 超分辨率放大正在进行中，退出将中断处理。'
+    });
+  } else {
+    setFnOSExitPageTips(null);
+  }
+});
+
+onUnmounted(() => {
+  if (!genStore.isUpscaling) {
+    setFnOSExitPageTips(null);
+  }
+});
 </script>
 
 <template>
@@ -347,6 +364,7 @@ const handleStartUpscale = async () => {
               <span>本地上传</span>
             </button>
             <button 
+              v-if="isInsideFnOS()"
               type="button"
               @click="handlePickNasFile"
               :disabled="isPickingNas"
@@ -373,6 +391,7 @@ const handleStartUpscale = async () => {
                 <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">分辨率变更</span>
                 <div v-if="activeTab === 'upload'" class="flex items-center gap-2">
                   <button 
+                    v-if="isInsideFnOS()"
                     @click="handlePickNasFile" 
                     :disabled="isPickingNas"
                     class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5 cursor-pointer disabled:opacity-50"

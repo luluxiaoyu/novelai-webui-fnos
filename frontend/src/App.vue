@@ -19,8 +19,16 @@ import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
 import ProfileDropdown from './components/ProfileDropdown.vue';
 import WelcomeSetupModal from './components/WelcomeSetupModal.vue';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
-import { pickNasImage, fetchNasImageFile, openNasImageInHost } from './utils/fnosBridge';
-import { Sun, Moon, Download, Copy, Loader2, Image as ImageIcon, X, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink } from 'lucide-vue-next';
+import { 
+  isInsideFnOS, 
+  pickNasImage, 
+  fetchNasImageFile, 
+  openNasImageFile, 
+  openNasImageFolder, 
+  setFnOSExitPageTips, 
+  syncFnOSTheme 
+} from './utils/fnosBridge';
+import { Sun, Moon, Download, Copy, Loader2, Image as ImageIcon, X, History, Trash2, RefreshCw, SlidersHorizontal, Layers, Paintbrush, Palette, Star, Check, Lock, Search, Folder, FolderHeart, FolderOpen, Database, DownloadCloud, UploadCloud, Sparkles, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RotateCcw, FileText, Plus, Minus, Users, User, UserPlus, Clock, Maximize2, HelpCircle, Zap, Settings, ExternalLink, FileImage, FolderSearch } from 'lucide-vue-next';
 
 const authStore = useAuthStore();
 const genStore = useGenerationStore();
@@ -942,19 +950,42 @@ const handlePickNasImageForInspection = async () => {
 };
 
 const openingNasId = ref<string | null>(null);
-const handleOpenInNas = async (img: any) => {
+const activeCanvasNasMenu = ref(false);
+const activeSidebarNasMenuId = ref<string | null>(null);
+
+const handleOpenFile = async (img: any) => {
   if (!img || openingNasId.value === img.id) return;
   openingNasId.value = img.id;
   try {
-    const res = await openNasImageInHost(profileStore.currentProfile, img);
+    const res = await openNasImageFile(profileStore.currentProfile, img);
     if (!res.success && res.message) {
       alert(res.message);
     }
   } catch (err: any) {
-    alert(err.message || '在 NAS 中打开图片失败');
+    alert(err.message || '在 NAS 中打开文件失败');
   } finally {
     openingNasId.value = null;
   }
+};
+
+const handleOpenFolder = async (img: any) => {
+  if (!img || openingNasId.value === img.id) return;
+  openingNasId.value = img.id;
+  try {
+    const res = await openNasImageFolder(profileStore.currentProfile, img);
+    if (!res.success && res.message) {
+      alert(res.message);
+    }
+  } catch (err: any) {
+    alert(err.message || '定位文件夹失败');
+  } finally {
+    openingNasId.value = null;
+  }
+};
+
+const closeNasMenus = () => {
+  activeCanvasNasMenu.value = false;
+  activeSidebarNasMenuId.value = null;
 };
 
 const inpaintImageSrc = computed(() => {
@@ -1214,11 +1245,36 @@ const clearInpaint = () => {
   showMaskEditor.value = false;
 };
 
+// 监听耗时任务（生图、导出、导入），在宿主环境注册退出拦截提示
+watch([() => genStore.isGenerating, isExporting, isImporting], ([generating, exporting, importing]) => {
+  if (generating) {
+    setFnOSExitPageTips({
+      title: '正在生成图像',
+      content: '正在与 NovelAI 通信生成图像，退出窗口将中断当前生成任务。'
+    });
+  } else if (exporting || importing) {
+    setFnOSExitPageTips({
+      title: '正在传输数据',
+      content: '正在导出或导入备份数据，退出窗口可能导致数据不完整。'
+    });
+  } else {
+    setFnOSExitPageTips(null);
+  }
+});
+
+let themeCleanup: (() => void) | undefined;
+
 // 页面加载或刷新时，自动探测服务端是否要求密钥验证，并重置可能挂起的生成状态、清空临时底图与遮罩，并重新获取最新余额
 onMounted(async () => {
   window.addEventListener('dragover', onWindowDragOver);
   window.addEventListener('dragleave', onWindowDragLeave);
   window.addEventListener('drop', onWindowDrop);
+  window.addEventListener('click', closeNasMenus);
+
+  // 飞牛系统日间/夜间模式自动跟随
+  themeCleanup = await syncFnOSTheme((dark) => {
+    isDark.value = dark;
+  });
 
   await authStore.checkSiteAuthStatus();
   await profileStore.fetchProfiles();
@@ -1263,6 +1319,8 @@ onUnmounted(() => {
   window.removeEventListener('dragover', onWindowDragOver);
   window.removeEventListener('dragleave', onWindowDragLeave);
   window.removeEventListener('drop', onWindowDrop);
+  window.removeEventListener('click', closeNasMenus);
+  themeCleanup?.();
   sidebarObserver?.disconnect();
 });
 
@@ -2176,6 +2234,7 @@ watch(
               <div class="flex items-center justify-between mb-1">
                 <span class="text-gray-500">上传底图:</span>
                 <button 
+                  v-if="isInsideFnOS()"
                   type="button" 
                   @click="handlePickNasImageForInspection"
                   :disabled="isPickingNasImage"
@@ -2358,15 +2417,44 @@ watch(
 
               <!-- 第 2 组操作 (移动端第 2 行 / PC端并排右侧)：在NAS打开、下载原图、复制、复用参数 -->
               <div class="flex items-center gap-1.5 sm:gap-2">
-                <button 
-                  @click="handleOpenInNas(genStore.currentImage)" 
-                  :disabled="openingNasId === genStore.currentImage?.id"
-                  class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 cursor-pointer disabled:opacity-50" 
-                  title="在 NAS 中打开此文件"
-                >
-                  <Loader2 v-if="openingNasId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                  <FolderOpen v-else class="w-4 h-4 sm:w-5 sm:h-5" />
-                </button>
+                <!-- 文件夹下拉操作菜单 -->
+                <div class="relative">
+                  <button 
+                    type="button"
+                    @click.stop="activeCanvasNasMenu = !activeCanvasNasMenu" 
+                    :disabled="openingNasId === genStore.currentImage?.id"
+                    class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 cursor-pointer disabled:opacity-50" 
+                    :class="activeCanvasNasMenu ? 'ring-2 ring-blue-500 text-blue-600 dark:text-blue-400' : ''"
+                    title="在 NAS 打开文件 / 定位文件夹"
+                  >
+                    <Loader2 v-if="openingNasId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+                    <FolderOpen v-else class="w-4 h-4 sm:w-5 sm:h-5" />
+                  </button>
+
+                  <!-- 下拉菜单 (PC端向上面弹出，移动端在顶部向下面弹出) -->
+                  <div 
+                    v-if="activeCanvasNasMenu"
+                    @click.stop
+                    class="absolute sm:bottom-full sm:mb-2 top-full mt-2 right-0 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                  >
+                    <button 
+                      type="button"
+                      @click.stop="activeCanvasNasMenu = false; handleOpenFile(genStore.currentImage)"
+                      class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
+                    >
+                      <FileImage class="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      <span>在NAS打开文件</span>
+                    </button>
+                    <button 
+                      type="button"
+                      @click.stop="activeCanvasNasMenu = false; handleOpenFolder(genStore.currentImage)"
+                      class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
+                    >
+                      <FolderSearch class="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      <span>定位文件夹</span>
+                    </button>
+                  </div>
+                </div>
                 <button @click="downloadImage" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95" title="下载原图">
                   <Download class="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
@@ -2505,13 +2593,16 @@ watch(
             <div 
               v-for="item in displayedSidebarHistory" 
               :key="item.id"
-              class="group relative w-full shrink-0 rounded-xl overflow-hidden border-2 transition-all bg-gray-50 dark:bg-gray-950 flex flex-col animate-fade-in"
-              :class="genStore.currentImage?.id === item.id ? 'border-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]' : 'border-gray-200/80 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700'"
+              class="group relative w-full shrink-0 rounded-xl border-2 transition-all bg-gray-50 dark:bg-gray-950 flex flex-col animate-fade-in"
+              :class="[
+                activeSidebarNasMenuId === item.id ? 'z-30' : 'z-0',
+                genStore.currentImage?.id === item.id ? 'border-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]' : 'border-gray-200/80 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700'
+              ]"
             >
               <!-- 缩略图区域 (点击切换为当前大图并跳转画布) -->
               <div 
                 @click="item.isNew = false; genStore.currentImage = item; resetZoom(); mobileTab = 'canvas'"
-                class="relative w-full h-44 sm:h-48 cursor-pointer flex items-center justify-center bg-gray-100/50 dark:bg-gray-900/50 overflow-hidden"
+                class="relative w-full h-44 sm:h-48 cursor-pointer flex items-center justify-center bg-gray-100/50 dark:bg-gray-900/50 overflow-hidden rounded-t-[10px]"
                 title="点击在画布中查看大图"
               >
                 <!-- 未读标签指示器 -->
@@ -2535,7 +2626,7 @@ watch(
               </div>
               
               <!-- 卡片底部独立操作栏 (纯图标精简布局，彻底杜绝文字折行挤压) -->
-              <div class="flex items-center justify-between px-2 py-1.5 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 text-xs">
+              <div class="flex items-center justify-between px-2 py-1.5 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 text-xs rounded-b-[10px]">
                 <div class="flex items-center gap-1">
                   <button 
                     @click.stop="item.isNew = false; genStore.currentImage = item; openInpaintEditor(item.url)" 
@@ -2563,15 +2654,45 @@ watch(
                 </div>
 
                 <div class="flex items-center gap-1">
-                  <button 
-                    @click.stop="handleOpenInNas(item)" 
-                    :disabled="openingNasId === item.id"
-                    class="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition active:scale-95 cursor-pointer disabled:opacity-50"
-                    title="在 NAS 中打开此文件"
-                  >
-                    <Loader2 v-if="openingNasId === item.id" class="w-3.5 h-3.5 animate-spin" />
-                    <FolderOpen v-else class="w-3.5 h-3.5" />
-                  </button>
+                  <!-- 文件夹下拉操作菜单 -->
+                  <div class="relative">
+                    <button 
+                      type="button"
+                      @click.stop="activeSidebarNasMenuId = activeSidebarNasMenuId === item.id ? null : item.id" 
+                      :disabled="openingNasId === item.id"
+                      class="p-1.5 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
+                      :class="activeSidebarNasMenuId === item.id ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/60 dark:text-blue-300' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40'"
+                      title="在 NAS 打开文件 / 定位文件夹"
+                    >
+                      <Loader2 v-if="openingNasId === item.id" class="w-3.5 h-3.5 animate-spin" />
+                      <FolderOpen v-else class="w-3.5 h-3.5" />
+                    </button>
+
+                    <!-- 下拉菜单 (向下弹出) -->
+                    <div 
+                      v-if="activeSidebarNasMenuId === item.id"
+                      @click.stop
+                      class="absolute top-full right-0 mt-1.5 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
+                    >
+                      <button 
+                        type="button"
+                        @click.stop="activeSidebarNasMenuId = null; handleOpenFile(item)"
+                        class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
+                      >
+                        <FileImage class="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                        <span>在NAS打开文件</span>
+                      </button>
+                      <button 
+                        type="button"
+                        @click.stop="activeSidebarNasMenuId = null; handleOpenFolder(item)"
+                        class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
+                      >
+                        <FolderSearch class="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>定位文件夹</span>
+                      </button>
+                    </div>
+                  </div>
+
                   <button 
                     @click.stop="handleDeleteHistory(item.id)" 
                     class="p-1.5 rounded-lg transition flex items-center gap-0.5 active:scale-95"

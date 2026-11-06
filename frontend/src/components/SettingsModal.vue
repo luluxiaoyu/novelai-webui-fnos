@@ -5,7 +5,7 @@ import { useProfileStore } from '../stores/profile';
 import { useGenerationStore } from '../stores/generation';
 import { encryptedAxios, setEncryptionConfig } from '../utils/api';
 import { getReduceMobileEffectsSetting, setReduceMobileEffectsSetting } from '../utils/mobilePerf';
-import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting, openFnOSFileManager, openAppAuthRoute, onDirectoryAuthorization, type FnosAppAuthResult } from '../utils/fnosBridge';
+import { isInsideFnOS, pickSharedDirectory, openFnOSAppSetting, openFnOSFileManager, openAppAuthRoute, onDirectoryAuthorization, setFnOSExitPageTips, type FnosAppAuthResult } from '../utils/fnosBridge';
 import CustomSelect from './CustomSelect.vue';
 import { 
   X, Check, AlertCircle, Loader2, Save, Globe, 
@@ -183,12 +183,26 @@ const mergeProgress = ref<{
 } | null>(null);
 let mergePollTimer: any = null;
 
+watch(isMerging, (val) => {
+  if (val) {
+    setFnOSExitPageTips({
+      title: '正在迁移合并存储数据',
+      content: '跨存储目录画廊数据合并进行中，退出窗口可能中断迁移。'
+    });
+  } else {
+    setFnOSExitPageTips(null);
+  }
+});
+
 onUnmounted(() => {
   pathsRequest++;
   settingsRequest++;
   validationRequest++;
   candidateRevision++;
   removeAuthorizationListener?.();
+  if (!isMerging.value) {
+    setFnOSExitPageTips(null);
+  }
   if (mergePollTimer) {
     clearTimeout(mergePollTimer);
     mergePollTimer = null;

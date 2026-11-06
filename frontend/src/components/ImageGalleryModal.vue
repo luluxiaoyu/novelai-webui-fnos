@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useProfileStore } from '../stores/profile';
-import { openNasImageFile, openNasImageFolder } from '../utils/fnosBridge';
+import { openNasImageFile, openNasImageFolder, setFnOSExitPageTips } from '../utils/fnosBridge';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { 
@@ -347,6 +347,17 @@ const handleKeyDown = (e: KeyboardEvent) => {
 
 const closeMenu = () => { activeMenuId.value = null; };
 
+watch(isZipping, (val) => {
+  if (val) {
+    setFnOSExitPageTips({
+      title: '正在打包图片',
+      content: '正在批量打包下载图片，退出将中断打包流程。'
+    });
+  } else {
+    setFnOSExitPageTips(null);
+  }
+});
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown);
   window.addEventListener('mouseup', stopDragSelect);
@@ -357,6 +368,9 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('mouseup', stopDragSelect);
   window.removeEventListener('click', closeMenu);
+  if (isZipping.value) {
+    setFnOSExitPageTips(null);
+  }
 });
 
 // 全选当前页
