@@ -3,6 +3,9 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useProfileStore } from '../stores/profile';
 import { isInsideFnOS, openNasImageFile, openNasImageFolder, setFnOSExitPageTips } from '../utils/fnosBridge';
+import { isMobileDevice, isMobileFnosApp } from '../utils/mobilePerf';
+import MobileImageSaveModal from './MobileImageSaveModal.vue';
+import { saveOrDownloadImage, type MobileSaveImagePayload } from '../utils/imageSave';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { 
@@ -37,6 +40,13 @@ const viewMode = ref<'grid' | 'compact'>('grid'); // grid: 经典网格, compact
 const selectedImage = ref<GeneratedImage | null>(null);
 const isDetailOpen = ref(false);
 const isMobileImageExpanded = ref(false);
+const showMobileSaveModal = ref(false);
+const mobileSaveImageData = ref<MobileSaveImagePayload>({
+  url: '',
+  filename: '',
+  profile: 'Default',
+  item: null
+});
 
 const toggleMobileImage = () => {
   if (typeof window !== 'undefined' && window.innerWidth < 768) {
@@ -485,10 +495,17 @@ const handleOpenFolder = async (img: GeneratedImage | null) => {
 
 // 单张下载
 const downloadSingleImage = (img: GeneratedImage) => {
-  const link = document.createElement('a');
-  link.href = img.url;
-  link.download = `novelai-${img.params.seed || Date.now()}-${img.id.slice(0, 6)}.png`;
-  link.click();
+  const filename = `novelai-${img.params.seed || Date.now()}-${img.id.slice(0, 6)}.png`;
+  saveOrDownloadImage({
+    url: img.url,
+    filename,
+    profile: profileStore.currentProfile || 'Default',
+    item: img,
+    onOpenMobileModal: (data) => {
+      mobileSaveImageData.value = data;
+      showMobileSaveModal.value = true;
+    }
+  });
 };
 
 // 批量打包 ZIP 下载
@@ -538,7 +555,34 @@ const downloadBatchZip = async () => {
     });
 
     const dateTag = new Date().toISOString().split('T')[0];
-    saveAs(content, `novelai-images-export-${dateTag}.zip`);
+    const zipFilename = `novelai-images-export-${dateTag}.zip`;
+
+    // 移动端若支持 Web Share 且处于安全上下文，尝试调起原生分享面板
+    if ((isMobileDevice() || isMobileFnosApp()) && typeof navigator !== 'undefined' && navigator.canShare && window.isSecureContext) {
+      try {
+        const file = new File([content], zipFilename, { type: 'application/zip' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: zipFilename
+          });
+          zipStatusText.value = '打包完成，已唤起系统保存！';
+          setTimeout(() => {
+            isZipping.value = false;
+            zipProgress.value = 0;
+          }, 1500);
+          return;
+        }
+      } catch (shareErr: any) {
+        if (shareErr.name === 'AbortError') {
+          isZipping.value = false;
+          zipProgress.value = 0;
+          return;
+        }
+      }
+    }
+
+    saveAs(content, zipFilename);
 
     zipStatusText.value = '打包完成！';
     setTimeout(() => {
@@ -1403,5 +1447,14 @@ const formatDateFull = (timestamp: number) => {
         </div>
       </div>
     </div>
+
+    <!-- 移动端 / 飞牛客户端保存到相册专属弹窗 -->
+    <MobileImageSaveModal 
+      v-model="showMobileSaveModal"
+      :image-url="mobileSaveImageData.url"
+      :filename="mobileSaveImageData.filename"
+      :profile="mobileSaveImageData.profile"
+      :item="mobileSaveImageData.item"
+    />
   </div>
 </template>

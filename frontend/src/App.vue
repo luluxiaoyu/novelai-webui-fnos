@@ -3,7 +3,6 @@ import { useAuthStore } from './stores/auth';
 import { useGenerationStore, isImageUpscaled } from './stores/generation';
 import { useProfileStore } from './stores/profile';
 import { resolveApiUrl } from './utils/api';
-import { saveAs } from 'file-saver';
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useDark, useToggle } from '@vueuse/core';
 import JSZip from 'jszip';
@@ -18,6 +17,8 @@ import V5UsageModal from './components/V5UsageModal.vue';
 import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
 import ProfileDropdown from './components/ProfileDropdown.vue';
 import WelcomeSetupModal from './components/WelcomeSetupModal.vue';
+import MobileImageSaveModal from './components/MobileImageSaveModal.vue';
+import { saveOrDownloadImage, type MobileSaveImagePayload } from './utils/imageSave';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
 import { 
   isInsideFnOS, 
@@ -42,6 +43,13 @@ const showV5UsageModal = ref(false);
 const showUpscaleModal = ref(false);
 const showWelcomeModal = ref(false);
 const upscaleTargetImage = ref<any>(null);
+const showMobileSaveModal = ref(false);
+const mobileSaveImageData = ref<MobileSaveImagePayload>({
+  url: '',
+  filename: '',
+  profile: 'Default',
+  item: null
+});
 
 const handleWelcomeCompleted = async () => {
   try {
@@ -1380,7 +1388,18 @@ const handleVerifyAccess = async () => {
 
 const downloadImage = () => {
   if (genStore.currentImage) {
-    saveAs(genStore.currentImage.url, `nai_${genStore.currentImage.id}.png`);
+    const img = genStore.currentImage;
+    const filename = `nai_${img.params.seed || Date.now()}_${img.id.slice(0, 6)}.png`;
+    saveOrDownloadImage({
+      url: img.url,
+      filename,
+      profile: profileStore.currentProfile || 'Default',
+      item: img,
+      onOpenMobileModal: (data) => {
+        mobileSaveImageData.value = data;
+        showMobileSaveModal.value = true;
+      }
+    });
   }
 };
 
@@ -3401,6 +3420,15 @@ watch(
     <WelcomeSetupModal 
       v-model="showWelcomeModal" 
       @completed="handleWelcomeCompleted" 
+    />
+
+    <!-- 移动端 / 飞牛手机客户端专属保存到相册引导弹窗 -->
+    <MobileImageSaveModal 
+      v-model="showMobileSaveModal"
+      :image-url="mobileSaveImageData.url"
+      :filename="mobileSaveImageData.filename"
+      :profile="mobileSaveImageData.profile"
+      :item="mobileSaveImageData.item"
     />
 
     <!-- 页面拖拽悬浮提示遮罩 -->

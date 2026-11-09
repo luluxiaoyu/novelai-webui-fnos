@@ -552,6 +552,11 @@ const serveImageHandler = (req, res) => {
   if (!imgPath) {
     return res.status(404).send('Image not found');
   }
+  const isDownload = req.query.download === '1' || req.query.download === 'true';
+  if (isDownload) {
+    const filename = req.query.filename || path.basename(imgPath);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+  }
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(imgPath);
 };

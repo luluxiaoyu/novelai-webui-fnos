@@ -1,4 +1,15 @@
 /**
+ * 检测当前是否为移动端设备（智能手机 / 平板设备）
+ */
+export const isMobileDevice = (): boolean => {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const isDesktop = /Windows NT|Macintosh|Mac OS X(?!.*Mobile)|Linux x86_64|CrOS/i.test(ua) && !/Android/i.test(ua);
+  if (isDesktop) return false;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || window.innerWidth < 768;
+};
+
+/**
  * 检测当前运行环境是否为【移动设备上的飞牛 App / 内嵌 WebView】
  * 
  * 严格保护规则：

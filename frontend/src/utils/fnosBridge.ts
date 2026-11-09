@@ -328,3 +328,26 @@ export async function syncFnOSTheme(onThemeChange: (isDark: boolean) => void): P
   }
 }
 
+/**
+ * 唤起系统外部浏览器打开 URL
+ * 在飞牛移动端 App 中会调用原生 openSystemBrowser 打开手机自带 Chrome/Safari
+ */
+export async function openInSystemBrowser(url: string): Promise<void> {
+  const fullUrl = url.startsWith('http://') || url.startsWith('https://')
+    ? url
+    : (typeof window !== 'undefined' ? `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}` : url);
+  try {
+    if (isInsideFnOS()) {
+      const app = await ready();
+      await app.openURL(fullUrl);
+      return;
+    }
+  } catch (e) {
+    console.warn('[fnOS] openURL via TrimApp failed, falling back to window.open:', e);
+  }
+  if (typeof window !== 'undefined') {
+    window.open(fullUrl, '_blank');
+  }
+}
+
+
