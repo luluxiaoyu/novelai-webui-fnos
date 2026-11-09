@@ -32,7 +32,7 @@ export function getTrimApp(): TrimApp {
 export function isInsideFnOS(): boolean {
   if (typeof window === 'undefined') return false;
   // 移动端飞牛 App / 内嵌 WebView 即使不是 iframe (window.self === window.top)，也是在飞牛宿主中，支持且能使用飞牛 JSSDK
-  if (isMobileFnosApp()) {
+  if (!getTrimApp().isWeb || isMobileFnosApp()) {
     return true;
   }
   try {

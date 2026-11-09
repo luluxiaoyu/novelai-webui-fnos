@@ -1,27 +1,46 @@
 import { saveAs } from 'file-saver';
-import { isMobileDevice, isMobileFnosApp } from './mobilePerf';
+import { ref } from 'vue';
+import { useGenerationStore, type GeneratedImage } from '../stores/generation';
+import { getTrimApp, openNasImageFile } from './fnosBridge';
+import { isMobileDevice } from './mobilePerf';
 
 export interface MobileSaveImagePayload {
   url: string;
   filename: string;
-  profile?: string;
-  item?: any;
 }
 
-export interface SaveImageOptions extends MobileSaveImagePayload {
+interface SaveImageOptions {
+  image: GeneratedImage;
+  filename: string;
+  profile: string;
   onOpenMobileModal: (data: MobileSaveImagePayload) => void;
 }
 
-/**
- * 跨平台图片保存与下载分发器
- * - PC 桌面端：直接调用浏览器原生下载保存到本地
- * - 移动端 / 飞牛手机客户端：优先尝试 Web Share API 保存至系统相册；不支持时唤起专属保存弹窗（长按存入相册、飞牛查看器存图等）
- */
-export async function saveOrDownloadImage(options: SaveImageOptions): Promise<void> {
-  const { url, filename, profile, item, onOpenMobileModal } = options;
+export const openingMobileImageId = ref<string | null>(null);
 
-  // 1. 处于移动设备环境（包括飞牛移动客户端与移动端网页浏览器）
-  if (isMobileDevice() || isMobileFnosApp()) {
+export async function saveOrDownloadImage(options: SaveImageOptions): Promise<void> {
+  const { image, filename, profile, onOpenMobileModal } = options;
+
+  if (!getTrimApp().isWeb) {
+    if (openingMobileImageId.value !== null) return;
+    openingMobileImageId.value = image.id;
+    try {
+      const saved = await useGenerationStore().ensureNasImageSaved(profile, image);
+      const result = await openNasImageFile(saved.profile, {
+        id: image.id,
+        url: saved.url?.startsWith('blob:') ? undefined : saved.url
+      });
+      if (!result.success) throw new Error(result.message || '打开飞牛看图器失败');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '打开飞牛看图器失败');
+    } finally {
+      openingMobileImageId.value = null;
+    }
+    return;
+  }
+
+  const { url } = image;
+  if (isMobileDevice()) {
     // 若浏览器支持 Web Share API 文件共享且处于安全上下文，尝试调起原生分享面板
     if (typeof navigator !== 'undefined' && typeof window !== 'undefined' && navigator.canShare && window.isSecureContext) {
       try {
@@ -45,8 +64,7 @@ export async function saveOrDownloadImage(options: SaveImageOptions): Promise<vo
       }
     }
 
-    // 无法直接通过系统 Share 保存时（如 HTTP 局域网、WebView 未授权等），唤起专属移动端保存相册弹窗
-    onOpenMobileModal({ url, filename, profile, item });
+    onOpenMobileModal({ url, filename });
     return;
   }
 

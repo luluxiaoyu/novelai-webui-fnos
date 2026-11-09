@@ -59,27 +59,6 @@
 
         <!-- 快捷操作选项列表 -->
         <div class="flex flex-col gap-2 pt-1">
-          <!-- 飞牛客户端：调起飞牛原生查看器（自带保存到相册） -->
-          <button 
-            v-if="isInsideFnOS()"
-            type="button"
-            @click="handleOpenInHost"
-            :disabled="isOpeningInHost"
-            class="w-full flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-800/80 hover:bg-blue-50 dark:hover:bg-blue-950/40 border border-gray-200/80 dark:border-gray-700/80 transition active:scale-[0.98] text-left cursor-pointer group"
-          >
-            <div class="flex items-center gap-3">
-              <div class="w-8 h-8 rounded-lg bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                <Loader2 v-if="isOpeningInHost" class="w-4 h-4 animate-spin" />
-                <FileImage v-else class="w-4 h-4" />
-              </div>
-              <div>
-                <div class="text-xs font-semibold text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400">在飞牛查看器中打开</div>
-                <div class="text-[11px] text-gray-500 dark:text-gray-400">调用飞牛 App 原生看图器，可直接点击底部「保存到手机」</div>
-              </div>
-            </div>
-            <ChevronRight class="w-4 h-4 text-gray-400 group-hover:text-blue-500 transition shrink-0" />
-          </button>
-
           <!-- 系统原生分享保存（现代浏览器/WebView支持时） -->
           <button 
             v-if="canShare"
@@ -169,24 +148,21 @@
 import { ref, computed } from 'vue';
 import { 
   X, Download, Share2, Copy, Check, ExternalLink, 
-  FileImage, Loader2, Smartphone, HelpCircle, ChevronRight 
+  Loader2, Smartphone, HelpCircle, ChevronRight
 } from 'lucide-vue-next';
-import { isInsideFnOS, openNasImageFile, openInSystemBrowser } from '../utils/fnosBridge';
+import { openInSystemBrowser } from '../utils/fnosBridge';
 import { saveAs } from 'file-saver';
 
 const props = defineProps<{
   modelValue: boolean;
   imageUrl: string;
   filename: string;
-  profile?: string;
-  item?: any;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
 }>();
 
-const isOpeningInHost = ref(false);
 const isSharing = ref(false);
 const isCopying = ref(false);
 const isCopied = ref(false);
@@ -203,28 +179,6 @@ const canShare = computed(() => {
 const close = () => {
   feedbackText.value = '';
   emit('update:modelValue', false);
-};
-
-const handleOpenInHost = async () => {
-  if (isOpeningInHost.value) return;
-  isOpeningInHost.value = true;
-  feedbackText.value = '';
-  try {
-    const targetItem = props.item || { url: props.imageUrl };
-    const res = await openNasImageFile(props.profile || 'Default', targetItem);
-    if (res.success) {
-      feedbackIsError.value = false;
-      feedbackText.value = '已在飞牛原生看图器中打开，请在看图器中点击「保存」存入手机相册';
-    } else {
-      feedbackIsError.value = true;
-      feedbackText.value = res.message || '打开飞牛查看器失败';
-    }
-  } catch (err: any) {
-    feedbackIsError.value = true;
-    feedbackText.value = err.message || '打开飞牛查看器失败';
-  } finally {
-    isOpeningInHost.value = false;
-  }
 };
 
 const handleShare = async () => {

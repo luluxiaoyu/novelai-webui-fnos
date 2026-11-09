@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, reactive, watch } from 'vue';
 import { encryptedAxios, encryptedFetchStream, resolveApiUrl } from '../utils/api';
+import { isAxiosError } from 'axios';
 import JSZip from 'jszip';
 import { useAuthStore } from './auth';
 import { useProfileStore } from './profile';
@@ -374,6 +375,53 @@ export const useGenerationStore = defineStore('generation', () => {
     }
   };
 
+  // A generated image can stay on the canvas after switching profiles.
+  const imageSaves = new WeakMap<GeneratedImage, { profile: string; pending?: Promise<string> }>();
+
+  const saveImageToNas = async (profile: string, image: GeneratedImage) => {
+    try {
+      const res = await encryptedAxios({
+        method: 'POST',
+        url: '/api/profiles/images/save',
+        data: {
+          profile,
+          item: {
+            id: image.id,
+            image: image.url,
+            params: image.params,
+            timestamp: image.timestamp || Date.now()
+          }
+        }
+      });
+      if (!res.data?.success || !res.data.url) {
+        throw new Error(res.data?.error || 'NAS 未返回保存后的图片地址');
+      }
+      image.url = resolveApiUrl(res.data.url);
+      return image.url;
+    } catch (error) {
+      const message = isAxiosError(error) ? error.response?.data?.error || error.message
+        : error instanceof Error ? error.message : '未知错误';
+      throw new Error(`写入 NAS 失败：${message}`);
+    }
+  };
+
+  const ensureNasImageSaved = async (profile: string, image: GeneratedImage) => {
+    const item = reactive(image);
+    let save = imageSaves.get(item);
+    if (!save) {
+      save = { profile };
+      imageSaves.set(item, save);
+    }
+    if (!save.pending && item.url?.startsWith('data:image/')) {
+      const state = save;
+      save.pending = saveImageToNas(save.profile, item).finally(() => {
+        state.pending = undefined;
+      });
+    }
+    const url = save.pending ? await save.pending : item.url;
+    return { profile: save.profile, url };
+  };
+
   const pushGeneratedImage = async (generated: GeneratedImage) => {
     if (!history.value.some(h => h.id === generated.id)) {
       history.value.unshift(generated);
@@ -381,27 +429,10 @@ export const useGenerationStore = defineStore('generation', () => {
     currentImage.value = generated;
 
     const current = profileStore.currentProfile || 'Default';
-    if (typeof generated.url === 'string' && generated.url.startsWith('data:image/')) {
-      try {
-        const res = await encryptedAxios({
-          method: 'POST',
-          url: '/api/profiles/images/save',
-          data: {
-            profile: current,
-            item: {
-              id: generated.id,
-              image: generated.url,
-              params: generated.params,
-              timestamp: generated.timestamp || Date.now()
-            }
-          }
-        });
-        if (res.data && res.data.success && res.data.url) {
-          generated.url = resolveApiUrl(res.data.url);
-        }
-      } catch (err: any) {
-        console.warn('[GenStore] Failed to save image to NAS disk:', err.message);
-      }
+    try {
+      await ensureNasImageSaved(current, generated);
+    } catch (error) {
+      console.warn('[GenStore] Failed to save image to NAS disk:', error);
     }
 
     const cleanParams = { ...params };
@@ -1265,6 +1296,7 @@ export const useGenerationStore = defineStore('generation', () => {
     streamPreviewUrl,
     error,
     currentImage,
+    ensureNasImageSaved,
     generate,
     useParams,
     usePrompt,

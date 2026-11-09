@@ -18,7 +18,7 @@ import ImageUpscaleModal from './components/ImageUpscaleModal.vue';
 import ProfileDropdown from './components/ProfileDropdown.vue';
 import WelcomeSetupModal from './components/WelcomeSetupModal.vue';
 import MobileImageSaveModal from './components/MobileImageSaveModal.vue';
-import { saveOrDownloadImage, type MobileSaveImagePayload } from './utils/imageSave';
+import { openingMobileImageId, saveOrDownloadImage, type MobileSaveImagePayload } from './utils/imageSave';
 import { parsePngMetadata, type ParsedImageMetadata } from './utils/pngMetadata';
 import { 
   isInsideFnOS, 
@@ -46,9 +46,7 @@ const upscaleTargetImage = ref<any>(null);
 const showMobileSaveModal = ref(false);
 const mobileSaveImageData = ref<MobileSaveImagePayload>({
   url: '',
-  filename: '',
-  profile: 'Default',
-  item: null
+  filename: ''
 });
 
 const handleWelcomeCompleted = async () => {
@@ -1391,10 +1389,9 @@ const downloadImage = () => {
     const img = genStore.currentImage;
     const filename = `nai_${img.params.seed || Date.now()}_${img.id.slice(0, 6)}.png`;
     saveOrDownloadImage({
-      url: img.url,
+      image: img,
       filename,
       profile: profileStore.currentProfile || 'Default',
-      item: img,
       onOpenMobileModal: (data) => {
         mobileSaveImageData.value = data;
         showMobileSaveModal.value = true;
@@ -2517,8 +2514,9 @@ watch(
                     </button>
                   </div>
                 </div>
-                <button @click="downloadImage" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95" title="下载原图">
-                  <Download class="w-4 h-4 sm:w-5 sm:h-5" />
+                <button @click="downloadImage" :disabled="openingMobileImageId !== null" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 disabled:opacity-60" title="下载原图">
+                  <Loader2 v-if="openingMobileImageId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+                  <Download v-else class="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
                 <button @click="copyImageToClipboard" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95" title="复制图像到剪贴板">
                   <Check v-if="imageCopied" class="w-4 h-4 sm:w-5 sm:h-5 text-green-500" />
@@ -3422,13 +3420,11 @@ watch(
       @completed="handleWelcomeCompleted" 
     />
 
-    <!-- 移动端 / 飞牛手机客户端专属保存到相册引导弹窗 -->
+    <!-- 移动浏览器保存图片 -->
     <MobileImageSaveModal 
       v-model="showMobileSaveModal"
       :image-url="mobileSaveImageData.url"
       :filename="mobileSaveImageData.filename"
-      :profile="mobileSaveImageData.profile"
-      :item="mobileSaveImageData.item"
     />
 
     <!-- 页面拖拽悬浮提示遮罩 -->

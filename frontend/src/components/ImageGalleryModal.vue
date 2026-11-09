@@ -5,7 +5,7 @@ import { useProfileStore } from '../stores/profile';
 import { isInsideFnOS, openNasImageFile, openNasImageFolder, setFnOSExitPageTips } from '../utils/fnosBridge';
 import { isMobileDevice, isMobileFnosApp } from '../utils/mobilePerf';
 import MobileImageSaveModal from './MobileImageSaveModal.vue';
-import { saveOrDownloadImage, type MobileSaveImagePayload } from '../utils/imageSave';
+import { openingMobileImageId, saveOrDownloadImage, type MobileSaveImagePayload } from '../utils/imageSave';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { 
@@ -43,9 +43,7 @@ const isMobileImageExpanded = ref(false);
 const showMobileSaveModal = ref(false);
 const mobileSaveImageData = ref<MobileSaveImagePayload>({
   url: '',
-  filename: '',
-  profile: 'Default',
-  item: null
+  filename: ''
 });
 
 const toggleMobileImage = () => {
@@ -497,10 +495,9 @@ const handleOpenFolder = async (img: GeneratedImage | null) => {
 const downloadSingleImage = (img: GeneratedImage) => {
   const filename = `novelai-${img.params.seed || Date.now()}-${img.id.slice(0, 6)}.png`;
   saveOrDownloadImage({
-    url: img.url,
+    image: img,
     filename,
     profile: profileStore.currentProfile || 'Default',
-    item: img,
     onOpenMobileModal: (data) => {
       mobileSaveImageData.value = data;
       showMobileSaveModal.value = true;
@@ -1044,10 +1041,12 @@ const formatDateFull = (timestamp: number) => {
 
                       <button 
                         @click.stop="downloadSingleImage(item)"
-                        class="p-1 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition active:scale-95 cursor-pointer"
+                        :disabled="openingMobileImageId !== null"
+                        class="p-1 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition active:scale-95 cursor-pointer disabled:opacity-60"
                         title="下载单张原图"
                       >
-                        <Download class="w-3.5 h-3.5" />
+                        <Loader2 v-if="openingMobileImageId === item.id" class="w-3.5 h-3.5 animate-spin" />
+                        <Download v-else class="w-3.5 h-3.5" />
                       </button>
                       <button 
                         @click.stop="deleteSingle(item)"
@@ -1242,10 +1241,12 @@ const formatDateFull = (timestamp: number) => {
               </template>
               <button 
                 @click="downloadSingleImage(selectedImage)"
-                class="px-2 sm:px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1 text-xs active:scale-95 shadow-sm cursor-pointer"
+                :disabled="openingMobileImageId !== null"
+                class="px-2 sm:px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1 text-xs active:scale-95 shadow-sm cursor-pointer disabled:opacity-60"
                 title="下载此原图"
               >
-                <Download class="w-3.5 h-3.5" />
+                <Loader2 v-if="openingMobileImageId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
+                <Download v-else class="w-3.5 h-3.5" />
                 <span class="hidden sm:inline">下载原图</span>
               </button>
               <button 
@@ -1448,13 +1449,11 @@ const formatDateFull = (timestamp: number) => {
       </div>
     </div>
 
-    <!-- 移动端 / 飞牛客户端保存到相册专属弹窗 -->
+    <!-- 移动浏览器保存图片 -->
     <MobileImageSaveModal 
       v-model="showMobileSaveModal"
       :image-url="mobileSaveImageData.url"
       :filename="mobileSaveImageData.filename"
-      :profile="mobileSaveImageData.profile"
-      :item="mobileSaveImageData.item"
     />
   </div>
 </template>
