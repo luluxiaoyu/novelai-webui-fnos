@@ -9,7 +9,7 @@ import {
   X, Search, Calendar, Download, Trash2, SlidersHorizontal, 
   Paintbrush, Copy, Check, Archive, CheckSquare, Square, 
   ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Grid, 
-  Layers, Clock, ArrowUpDown, Sparkles, Maximize2, Loader2, FolderOpen,
+  Layers, Clock, ArrowUpDown, Sparkles, Maximize2, Minimize2, Loader2, FolderOpen,
   FileImage, FolderSearch
 } from 'lucide-vue-next';
 
@@ -36,6 +36,13 @@ const viewMode = ref<'grid' | 'compact'>('grid'); // grid: 经典网格, compact
 // 选中的单张详情图
 const selectedImage = ref<GeneratedImage | null>(null);
 const isDetailOpen = ref(false);
+const isMobileImageExpanded = ref(false);
+
+const toggleMobileImage = () => {
+  if (typeof window !== 'undefined' && window.innerWidth < 768) {
+    isMobileImageExpanded.value = !isMobileImageExpanded.value;
+  }
+};
 
 // 批量选择状态
 const isBatchMode = ref(false);
@@ -319,14 +326,23 @@ const openDetail = (img: GeneratedImage) => {
   }
   img.isNew = false;
   selectedImage.value = img;
+  isMobileImageExpanded.value = false;
   isDetailOpen.value = true;
 };
+
+// 选中的单张详情图索引与是否有上一张/下一张
+const currentImageIndex = computed(() => {
+  if (!selectedImage.value) return -1;
+  return filteredImages.value.findIndex(item => item.id === selectedImage.value?.id);
+});
+const hasPrevImage = computed(() => currentImageIndex.value > 0);
+const hasNextImage = computed(() => currentImageIndex.value !== -1 && currentImageIndex.value < filteredImages.value.length - 1);
 
 // 键盘导航 (上一张/下一张)
 const navigateImage = (direction: 'prev' | 'next') => {
   if (!selectedImage.value) return;
   const list = filteredImages.value;
-  const currentIndex = list.findIndex(item => item.id === selectedImage.value?.id);
+  const currentIndex = currentImageIndex.value;
   if (currentIndex === -1) return;
 
   if (direction === 'prev' && currentIndex > 0) {
@@ -1120,83 +1136,126 @@ const formatDateFull = (timestamp: number) => {
     <!-- 大图与全部参数透视弹窗 (Lightbox Detail Inspector) -->
     <div 
       v-if="isDetailOpen && selectedImage"
-      @click.stop
+      @click="isDetailOpen = false"
       class="fixed inset-0 z-[60] flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/85 backdrop-blur-lg animate-fade-in"
     >
       <div 
         @click.stop
-        class="w-full h-full max-w-6xl bg-white dark:bg-gray-900 rounded-3xl border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col md:flex-row overflow-hidden"
+        class="w-full h-full max-w-6xl bg-white dark:bg-gray-900 rounded-2xl sm:rounded-3xl border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col md:flex-row overflow-y-auto md:overflow-hidden"
       >
-        <!-- 左侧大图预览区域 (带清晰顶部导航栏，绝不遮挡画面) -->
-        <div class="relative flex-1 bg-gray-950 flex flex-col overflow-hidden">
+        <!-- 左侧大图预览区域 (移动端支持固定高度展示与一键全屏切换，PC端自适应填满) -->
+        <div 
+          class="relative w-full bg-gray-950 flex flex-col overflow-hidden transition-all duration-200"
+          :class="isMobileImageExpanded ? 'h-full flex-1' : 'shrink-0 h-[42vh] sm:h-[48vh] min-h-[220px] max-h-[60vh] md:max-h-none md:min-h-0 md:h-full md:flex-1'"
+        >
           <!-- 预览顶部导航栏 -->
-          <div class="flex items-center justify-between px-4 py-2.5 bg-black/40 border-b border-white/10 text-white shrink-0">
+          <div class="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-2.5 bg-black/40 border-b border-white/10 text-white shrink-0">
             <!-- 上一张 / 下一张导航按键 -->
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-1 sm:gap-2">
               <button 
                 @click="navigateImage('prev')"
-                class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95"
+                :disabled="!hasPrevImage"
+                class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-0.5 sm:gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white/10"
                 title="上一张 (左箭头 ←)"
               >
                 <ChevronLeft class="w-4 h-4" />
-                <span>上一张</span>
+                <span class="hidden sm:inline">上一张</span>
               </button>
               <button 
                 @click="navigateImage('next')"
-                class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95"
+                :disabled="!hasNextImage"
+                class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-0.5 sm:gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white/10"
                 title="下一张 (右箭头 →)"
               >
-                <span>下一张</span>
+                <span class="hidden sm:inline">下一张</span>
                 <ChevronRight class="w-4 h-4" />
               </button>
             </div>
 
             <!-- 右侧操作 -->
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-1 sm:gap-2">
               <template v-if="isInsideFnOS()">
                 <button 
                   @click="handleOpenFile(selectedImage)"
                   :disabled="openingNasId === selectedImage.id"
-                  class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                  class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
                   title="在 NAS 打开文件"
                 >
                   <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
                   <FileImage v-else class="w-3.5 h-3.5 text-blue-400" />
-                  <span>在NAS打开文件</span>
+                  <span class="hidden md:inline">在NAS打开</span>
                 </button>
                 <button 
                   @click="handleOpenFolder(selectedImage)"
                   :disabled="openingNasId === selectedImage.id"
-                  class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                  class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
                   title="定位文件夹"
                 >
                   <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
                   <FolderSearch v-else class="w-3.5 h-3.5 text-emerald-400" />
-                  <span>定位文件夹</span>
+                  <span class="hidden md:inline">定位文件夹</span>
                 </button>
               </template>
               <button 
                 @click="downloadSingleImage(selectedImage)"
-                class="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1.5 text-xs active:scale-95 shadow-sm cursor-pointer"
+                class="px-2 sm:px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition flex items-center gap-1 text-xs active:scale-95 shadow-sm cursor-pointer"
                 title="下载此原图"
               >
                 <Download class="w-3.5 h-3.5" />
-                <span>下载原图</span>
+                <span class="hidden sm:inline">下载原图</span>
+              </button>
+              <button 
+                @click="isMobileImageExpanded = !isMobileImageExpanded"
+                class="md:hidden px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
+                :title="isMobileImageExpanded ? '显示参数面板' : '全屏预览图片'"
+              >
+                <Minimize2 v-if="isMobileImageExpanded" class="w-3.5 h-3.5 text-amber-400" />
+                <Maximize2 v-else class="w-3.5 h-3.5" />
+              </button>
+              <button 
+                @click="isDetailOpen = false"
+                class="md:hidden px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center justify-center text-xs active:scale-95 cursor-pointer"
+                title="关闭详情"
+              >
+                <X class="w-4 h-4" />
               </button>
             </div>
           </div>
 
           <!-- 大图正中展示容器 -->
-          <div class="flex-1 flex items-center justify-center p-3 sm:p-6 overflow-hidden">
+          <div class="flex-1 flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-hidden relative select-none">
+            <!-- 左右浮动快捷切换按键 (移动端大图便捷切换) -->
+            <button 
+              v-if="hasPrevImage"
+              @click.stop="navigateImage('prev')"
+              class="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 hover:bg-black/75 text-white/80 hover:text-white backdrop-blur-sm transition active:scale-90 z-10 cursor-pointer"
+              title="上一张 (左箭头 ←)"
+            >
+              <ChevronLeft class="w-5 h-5" />
+            </button>
+            <button 
+              v-if="hasNextImage"
+              @click.stop="navigateImage('next')"
+              class="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 hover:bg-black/75 text-white/80 hover:text-white backdrop-blur-sm transition active:scale-90 z-10 cursor-pointer"
+              title="下一张 (右箭头 →)"
+            >
+              <ChevronRight class="w-5 h-5" />
+            </button>
+
             <img 
               :src="selectedImage.url" 
-              class="max-w-full max-h-full object-contain rounded-xl shadow-2xl transition-all" 
+              class="max-w-full max-h-full object-contain rounded-xl shadow-2xl transition-all cursor-pointer md:cursor-default" 
+              @click="toggleMobileImage"
+              :title="isMobileImageExpanded ? '点击还原' : undefined"
             />
           </div>
         </div>
 
         <!-- 右侧全部生成参数透视与操作栏 (可滚动) -->
-        <div class="w-full md:w-96 p-5 sm:p-6 bg-white dark:bg-gray-900 border-t md:border-t-0 md:border-l border-gray-200 dark:border-gray-800 flex flex-col justify-between overflow-y-auto custom-scrollbar shrink-0">
+        <div 
+          :class="{ 'hidden md:flex': isMobileImageExpanded }"
+          class="w-full md:w-96 p-4 sm:p-5 md:p-6 bg-white dark:bg-gray-900 border-t md:border-t-0 md:border-l border-gray-200 dark:border-gray-800 flex flex-col justify-between overflow-y-visible md:overflow-y-auto custom-scrollbar shrink-0"
+        >
           <div class="flex flex-col gap-4">
             <!-- 头部操作按钮组 (X 位于弹窗最右上角) -->
             <div class="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-gray-800">

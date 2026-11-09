@@ -30,7 +30,10 @@ export const isMobileFnosApp = (): boolean => {
     isMobileIframe = true;
   }
 
-  return hasFnosTag || isAndroidWebView || isMobileIframe;
+  // 4. Flutter WebView 注入特征 (飞牛移动客户端使用 Flutter InAppWebView)
+  const hasFlutterBridge = typeof (window as any).flutter_inappwebview !== 'undefined';
+
+  return hasFnosTag || isAndroidWebView || isMobileIframe || hasFlutterBridge;
 };
 
 const STORAGE_KEY = 'novelai_reduce_mobile_effects';

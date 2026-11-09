@@ -1,5 +1,6 @@
 import { TrimApp } from '@trimjs/web-app';
 import { resolveApiUrl } from './api';
+import { isMobileFnosApp } from './mobilePerf';
 
 export interface FnosPickResult {
   supported: boolean;
@@ -30,6 +31,10 @@ export function getTrimApp(): TrimApp {
 
 export function isInsideFnOS(): boolean {
   if (typeof window === 'undefined') return false;
+  // 移动端飞牛 App / 内嵌 WebView 即使不是 iframe (window.self === window.top)，也是在飞牛宿主中，支持且能使用飞牛 JSSDK
+  if (isMobileFnosApp()) {
+    return true;
+  }
   try {
     if (window.self === window.top) {
       return false;
@@ -97,7 +102,7 @@ export function getParentFolderPath(filePath: string): string {
 
 export async function openFnOSFileManager(targetPath: string): Promise<{ success: boolean; error?: string }> {
   try {
-    if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统桌面端内支持直接打开文件管理器' };
+    if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统客户端内支持直接打开文件管理器' };
     const app = await ready();
     // 飞牛文件管理器仅接受目录路径，若传入带文件扩展名的路径则剥离文件名
     let dirPath = targetPath;
@@ -112,7 +117,7 @@ export async function openFnOSFileManager(targetPath: string): Promise<{ success
 }
 
 export async function openFnOSFile(filePath: string): Promise<{ success: boolean; error?: string }> {
-  if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统桌面端内支持直接打开文件' };
+  if (!isInsideFnOS()) return { success: false, error: '仅在飞牛系统客户端内支持直接打开文件' };
   try {
     const app = await ready();
     await app.openFile(filePath);
@@ -189,7 +194,7 @@ export async function openNasImageFolder(profile: string, item: { url?: string; 
 export const openNasImageInHost = openNasImageFile;
 
 export async function pickNasImage(): Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }> {
-  if (!isInsideFnOS()) return { success: false, error: '请在飞牛系统桌面端内使用此功能' };
+  if (!isInsideFnOS()) return { success: false, error: '请在飞牛系统客户端内使用此功能' };
   try {
     const app = await ready();
     const files = await app.pickFile({
@@ -223,7 +228,7 @@ export async function fetchNasImageFile(targetPath: string): Promise<File> {
 }
 
 export async function openAppAuthRoute(): Promise<{ success: boolean; error?: string }> {
-  if (!getTrimApp().isStandaloneWeb) return { success: false, error: '请在当前宿主内使用“添加授权”打开原生选择器' };
+  if (isInsideFnOS()) return { success: false, error: '请在当前宿主内使用“添加授权”打开原生选择器' };
   if (authWindow && !authWindow.closed) {
     authWindow.focus();
     return { success: false, error: '已有授权页面，请先完成或关闭该页面' };

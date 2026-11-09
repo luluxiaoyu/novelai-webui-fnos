@@ -1503,8 +1503,8 @@ watch(
         
         <!-- 左侧区域：Logo标题、存档快速切换以及创作快捷按钮 -->
         <div class="flex items-center gap-2 shrink-0">
-          <!-- 独立页面状态下（如新标签页打开或浏览器直连）显示 Logo 和标题 -->
-          <div v-if="!isInIframe" class="flex items-center gap-2 mr-1 shrink-0">
+          <!-- 独立页面状态下（如新标签页打开或浏览器直连）显示 Logo 和标题，在飞牛宿主系统内则隐藏 -->
+          <div v-if="!isInsideFnOS()" class="flex items-center gap-2 mr-1 shrink-0">
             <img src="./favicon.png" alt="Logo" class="w-6 h-6 rounded-md object-contain shrink-0" />
             <h1 class="text-base sm:text-lg font-bold tracking-tight whitespace-nowrap">
               NovelAI WebUI
@@ -2459,8 +2459,8 @@ watch(
 
               <!-- 第 2 组操作 (移动端第 2 行 / PC端并排右侧)：在NAS打开、下载原图、复制、复用参数 -->
               <div class="flex items-center gap-1.5 sm:gap-2">
-                <!-- 文件夹下拉操作菜单 (仅在 iframe 宿主环境内展示，外部独立浏览器隐藏) -->
-                <div v-if="isInIframe" class="relative" ref="canvasFolderButtonRef">
+                <!-- 文件夹下拉操作菜单 (在飞牛宿主环境内展示，外部独立浏览器隐藏) -->
+                <div v-if="isInsideFnOS()" class="relative" ref="canvasFolderButtonRef">
                   <button 
                     type="button"
                     @click.stop="toggleCanvasNasMenu($event)" 
@@ -2607,15 +2607,6 @@ watch(
           </div>
           <div class="flex items-center gap-1">
             <button 
-              v-if="filteredHistory.length > 0"
-              @click="genStore.clearFilteredHistory(genStore.history.filter(i => !filteredHistory.map(f => f.id).includes(i.id)).map(i => i.id))" 
-              class="text-[11px] text-red-500 hover:underline px-1.5 py-1 flex items-center gap-0.5"
-              title="清空当前显示的记录"
-            >
-              <Trash2 class="w-3 h-3" />
-              清空
-            </button>
-            <button 
               @click="mobileTab = 'canvas'"
               class="lg:hidden text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition ml-1"
               title="关闭历史面板"
@@ -2698,8 +2689,8 @@ watch(
                 </div>
 
                 <div class="flex items-center gap-1">
-                  <!-- 文件夹下拉操作菜单 (仅在 iframe 宿主环境内展示) -->
-                  <div v-if="isInIframe" class="relative">
+                  <!-- 文件夹下拉操作菜单 (在飞牛宿主环境内展示) -->
+                  <div v-if="isInsideFnOS()" class="relative">
                     <button 
                       type="button"
                       @click.stop="toggleSidebarNasMenu(item.id, $event)" 
