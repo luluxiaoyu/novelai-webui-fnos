@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useGenerationStore, isImageUpscaled, type GeneratedImage } from '../stores/generation';
 import { useProfileStore } from '../stores/profile';
 import { isInsideFnOS, openNasImageFile, openNasImageFolder, setFnOSExitPageTips } from '../utils/fnosBridge';
@@ -11,7 +11,7 @@ import { saveAs } from 'file-saver';
 import { 
   X, Search, Calendar, Download, Trash2, SlidersHorizontal, 
   Paintbrush, Copy, Check, Archive, CheckSquare, Square, 
-  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Grid, 
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown, ChevronUp, Grid, 
   Layers, Clock, ArrowUpDown, Sparkles, Maximize2, Minimize2, Loader2, FolderOpen,
   FileImage, FolderSearch
 } from 'lucide-vue-next';
@@ -346,7 +346,125 @@ const currentImageIndex = computed(() => {
 const hasPrevImage = computed(() => currentImageIndex.value > 0);
 const hasNextImage = computed(() => currentImageIndex.value !== -1 && currentImageIndex.value < filteredImages.value.length - 1);
 
-// 键盘导航 (上一张/下一张)
+// 缩略图画廊切换栏状态与交互
+const showFilmstrip = ref(true);
+const filmstripContainer = ref<HTMLElement | null>(null);
+const thumbnailRefs = new Map<string, HTMLElement>();
+
+const setThumbnailRef = (id: string, el: any) => {
+  if (el) {
+    thumbnailRefs.set(id, (el as any).$el || el);
+  } else {
+    thumbnailRefs.delete(id);
+  }
+};
+
+const scrollThumbnailIntoView = (id: string, behavior: ScrollBehavior = 'smooth') => {
+  const container = filmstripContainer.value;
+  const thumb = thumbnailRefs.get(id);
+  if (!container || !thumb) {
+    requestAnimationFrame(() => {
+      const c = filmstripContainer.value;
+      const t = thumbnailRefs.get(id);
+      if (!c || !t) return;
+      const cRect = c.getBoundingClientRect();
+      const tRect = t.getBoundingClientRect();
+      const targetScrollLeft = (tRect.left - cRect.left + c.scrollLeft) - (c.clientWidth / 2) + (t.offsetWidth / 2);
+      c.scrollTo({
+        left: Math.max(0, targetScrollLeft),
+        behavior
+      });
+    });
+    return;
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const thumbRect = thumb.getBoundingClientRect();
+  const targetScrollLeft = (thumbRect.left - containerRect.left + container.scrollLeft) - (container.clientWidth / 2) + (thumb.offsetWidth / 2);
+  container.scrollTo({
+    left: Math.max(0, targetScrollLeft),
+    behavior
+  });
+};
+
+const scrollFilmstrip = (direction: 'left' | 'right') => {
+  if (!filmstripContainer.value) return;
+  const scrollAmount = Math.max(180, Math.floor(filmstripContainer.value.clientWidth * 0.6));
+  filmstripContainer.value.scrollBy({
+    left: direction === 'left' ? -scrollAmount : scrollAmount,
+    behavior: 'smooth'
+  });
+};
+
+const handleFilmstripWheel = (e: WheelEvent) => {
+  if (!filmstripContainer.value) return;
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+    filmstripContainer.value.scrollLeft += e.deltaY;
+  }
+};
+
+const selectThumbnail = (item: GeneratedImage) => {
+  if (!item) return;
+  item.isNew = false;
+  selectedImage.value = item;
+};
+
+// 退出大图弹窗时，将外层主网格分页同步到当前选中的图片所在页
+const syncPageWithSelectedImage = () => {
+  if (!selectedImage.value || pageSize.value === 'all') return;
+  const idx = filteredImages.value.findIndex(img => img.id === selectedImage.value?.id);
+  if (idx !== -1) {
+    const targetPage = Math.floor(idx / Number(pageSize.value)) + 1;
+    if (targetPage !== currentPage.value) {
+      currentPage.value = targetPage;
+    }
+  }
+};
+
+watch(
+  () => selectedImage.value?.id,
+  (newId) => {
+    if (newId && isDetailOpen.value) {
+      nextTick(() => {
+        scrollThumbnailIntoView(newId, 'smooth');
+      });
+    }
+  }
+);
+
+watch(isDetailOpen, (open) => {
+  if (open) {
+    if (selectedImage.value) {
+      nextTick(() => {
+        scrollThumbnailIntoView(selectedImage.value!.id, 'auto');
+      });
+    }
+  } else {
+    syncPageWithSelectedImage();
+    thumbnailRefs.clear();
+  }
+});
+
+watch(showFilmstrip, (val) => {
+  if (val && selectedImage.value) {
+    nextTick(() => {
+      scrollThumbnailIntoView(selectedImage.value!.id, 'auto');
+    });
+  }
+});
+
+watch(isMobileImageExpanded, () => {
+  if (selectedImage.value && showFilmstrip.value) {
+    nextTick(() => {
+      scrollThumbnailIntoView(selectedImage.value!.id, 'auto');
+    });
+  }
+});
+
+// 键盘与手势导航 (上一张/下一张)
 const navigateImage = (direction: 'prev' | 'next') => {
   if (!selectedImage.value) return;
   const list = filteredImages.value;
@@ -354,17 +472,59 @@ const navigateImage = (direction: 'prev' | 'next') => {
   if (currentIndex === -1) return;
 
   if (direction === 'prev' && currentIndex > 0) {
-    selectedImage.value = list[currentIndex - 1];
+    const prevItem = list[currentIndex - 1];
+    if (prevItem) {
+      prevItem.isNew = false;
+      selectedImage.value = prevItem;
+    }
   } else if (direction === 'next' && currentIndex < list.length - 1) {
-    selectedImage.value = list[currentIndex + 1];
+    const nextItem = list[currentIndex + 1];
+    if (nextItem) {
+      nextItem.isNew = false;
+      selectedImage.value = nextItem;
+    }
+  }
+};
+
+// 移动端大图手势左右滑动切换
+let touchStartX = 0;
+let touchStartY = 0;
+let touchStartTime = 0;
+
+const handleImageTouchStart = (e: TouchEvent) => {
+  if (e.touches.length === 1) {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchStartTime = Date.now();
+  }
+};
+
+const handleImageTouchEnd = (e: TouchEvent) => {
+  if (e.changedTouches.length === 1) {
+    const deltaX = e.changedTouches[0].clientX - touchStartX;
+    const deltaY = e.changedTouches[0].clientY - touchStartY;
+    const duration = Date.now() - touchStartTime;
+
+    // 水平滑动手势：时长 < 600ms，位移 > 40px，且横向位移为主导方向
+    if (duration < 600 && Math.abs(deltaX) > 40 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
+      if (deltaX < 0) {
+        if (hasNextImage.value) navigateImage('next');
+      } else {
+        if (hasPrevImage.value) navigateImage('prev');
+      }
+    }
   }
 };
 
 const handleKeyDown = (e: KeyboardEvent) => {
   if (!props.modelValue) return;
   if (isDetailOpen.value) {
-    if (e.key === 'ArrowLeft') navigateImage('prev');
-    if (e.key === 'ArrowRight') navigateImage('next');
+    const target = e.target as HTMLElement | null;
+    const isEditing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    if (!isEditing) {
+      if (e.key === 'ArrowLeft') navigateImage('prev');
+      if (e.key === 'ArrowRight') navigateImage('next');
+    }
     if (e.key === 'Escape') isDetailOpen.value = false;
   }
 };
@@ -618,12 +778,14 @@ const deleteBatch = () => {
 // 复用参数
 const reuseParams = (img: GeneratedImage) => {
   genStore.useParams(img);
+  isDetailOpen.value = false;
   emit('update:modelValue', false);
 };
 
 // 涂鸦重绘
 const sendInpaint = (img: GeneratedImage) => {
   genStore.currentImage = img;
+  isDetailOpen.value = false;
   emit('send-inpaint', img);
   emit('update:modelValue', false);
 };
@@ -1188,17 +1350,17 @@ const formatDateFull = (timestamp: number) => {
       >
         <!-- 左侧大图预览区域 (移动端支持固定高度展示与一键全屏切换，PC端自适应填满) -->
         <div 
-          class="relative w-full bg-gray-950 flex flex-col overflow-hidden transition-all duration-200"
-          :class="isMobileImageExpanded ? 'h-full flex-1' : 'shrink-0 h-[42vh] sm:h-[48vh] min-h-[220px] max-h-[60vh] md:max-h-none md:min-h-0 md:h-full md:flex-1'"
+          class="relative w-full bg-white dark:bg-gray-950 flex flex-col overflow-hidden transition-all duration-200"
+          :class="isMobileImageExpanded ? 'h-full flex-1' : 'shrink-0 h-[48vh] sm:h-[52vh] min-h-[260px] max-h-[65vh] md:max-h-none md:min-h-0 md:h-full md:flex-1'"
         >
           <!-- 预览顶部导航栏 -->
-          <div class="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-2.5 bg-black/40 border-b border-white/10 text-white shrink-0">
+          <div class="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-2.5 bg-white/90 dark:bg-black/40 border-b border-gray-200/80 dark:border-white/10 text-gray-700 dark:text-white shrink-0 backdrop-blur-sm">
             <!-- 上一张 / 下一张导航按键 -->
             <div class="flex items-center gap-1 sm:gap-2">
               <button 
                 @click="navigateImage('prev')"
                 :disabled="!hasPrevImage"
-                class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-0.5 sm:gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white/10"
+                class="px-2 sm:px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200/80 dark:border-transparent dark:bg-white/10 dark:hover:bg-white/20 dark:text-white transition flex items-center gap-0.5 sm:gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-gray-100 dark:disabled:hover:bg-white/10"
                 title="上一张 (左箭头 ←)"
               >
                 <ChevronLeft class="w-4 h-4" />
@@ -1207,7 +1369,7 @@ const formatDateFull = (timestamp: number) => {
               <button 
                 @click="navigateImage('next')"
                 :disabled="!hasNextImage"
-                class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-0.5 sm:gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white/10"
+                class="px-2 sm:px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200/80 dark:border-transparent dark:bg-white/10 dark:hover:bg-white/20 dark:text-white transition flex items-center gap-0.5 sm:gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-gray-100 dark:disabled:hover:bg-white/10"
                 title="下一张 (右箭头 →)"
               >
                 <span class="hidden sm:inline">下一张</span>
@@ -1221,21 +1383,21 @@ const formatDateFull = (timestamp: number) => {
                 <button 
                   @click="handleOpenFile(selectedImage)"
                   :disabled="openingNasId === selectedImage.id"
-                  class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                  class="px-2 sm:px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200/80 dark:border-transparent dark:bg-white/10 dark:hover:bg-white/20 dark:text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
                   title="在 NAS 打开文件"
                 >
                   <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
-                  <FileImage v-else class="w-3.5 h-3.5 text-blue-400" />
+                  <FileImage v-else class="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
                   <span class="hidden md:inline">在NAS打开</span>
                 </button>
                 <button 
                   @click="handleOpenFolder(selectedImage)"
                   :disabled="openingNasId === selectedImage.id"
-                  class="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
+                  class="px-2 sm:px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200/80 dark:border-transparent dark:bg-white/10 dark:hover:bg-white/20 dark:text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer disabled:opacity-50"
                   title="定位文件夹"
                 >
                   <Loader2 v-if="openingNasId === selectedImage.id" class="w-3.5 h-3.5 animate-spin" />
-                  <FolderSearch v-else class="w-3.5 h-3.5 text-emerald-400" />
+                  <FolderSearch v-else class="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                   <span class="hidden md:inline">定位文件夹</span>
                 </button>
               </template>
@@ -1251,15 +1413,15 @@ const formatDateFull = (timestamp: number) => {
               </button>
               <button 
                 @click="isMobileImageExpanded = !isMobileImageExpanded"
-                class="md:hidden px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
+                class="md:hidden px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200/80 dark:border-transparent dark:bg-white/10 dark:hover:bg-white/20 dark:text-white transition flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
                 :title="isMobileImageExpanded ? '显示参数面板' : '全屏预览图片'"
               >
-                <Minimize2 v-if="isMobileImageExpanded" class="w-3.5 h-3.5 text-amber-400" />
+                <Minimize2 v-if="isMobileImageExpanded" class="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
                 <Maximize2 v-else class="w-3.5 h-3.5" />
               </button>
               <button 
                 @click="isDetailOpen = false"
-                class="md:hidden px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition flex items-center justify-center text-xs active:scale-95 cursor-pointer"
+                class="md:hidden px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200/80 dark:border-transparent dark:bg-white/10 dark:hover:bg-white/20 dark:text-white transition flex items-center justify-center text-xs active:scale-95 cursor-pointer"
                 title="关闭详情"
               >
                 <X class="w-4 h-4" />
@@ -1268,12 +1430,16 @@ const formatDateFull = (timestamp: number) => {
           </div>
 
           <!-- 大图正中展示容器 -->
-          <div class="flex-1 flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-hidden relative select-none">
+          <div 
+            class="flex-1 min-h-0 flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-hidden relative select-none bg-white dark:bg-gray-950"
+            @touchstart="handleImageTouchStart"
+            @touchend="handleImageTouchEnd"
+          >
             <!-- 左右浮动快捷切换按键 (移动端大图便捷切换) -->
             <button 
               v-if="hasPrevImage"
               @click.stop="navigateImage('prev')"
-              class="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 hover:bg-black/75 text-white/80 hover:text-white backdrop-blur-sm transition active:scale-90 z-10 cursor-pointer"
+              class="absolute left-2.5 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/85 hover:bg-white text-gray-700 shadow-md border border-gray-200/80 dark:border-transparent dark:bg-black/50 dark:hover:bg-black/75 dark:text-white/80 dark:hover:text-white backdrop-blur-sm transition active:scale-90 z-10 cursor-pointer"
               title="上一张 (左箭头 ←)"
             >
               <ChevronLeft class="w-5 h-5" />
@@ -1281,7 +1447,7 @@ const formatDateFull = (timestamp: number) => {
             <button 
               v-if="hasNextImage"
               @click.stop="navigateImage('next')"
-              class="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 hover:bg-black/75 text-white/80 hover:text-white backdrop-blur-sm transition active:scale-90 z-10 cursor-pointer"
+              class="absolute right-2.5 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/85 hover:bg-white text-gray-700 shadow-md border border-gray-200/80 dark:border-transparent dark:bg-black/50 dark:hover:bg-black/75 dark:text-white/80 dark:hover:text-white backdrop-blur-sm transition active:scale-90 z-10 cursor-pointer"
               title="下一张 (右箭头 →)"
             >
               <ChevronRight class="w-5 h-5" />
@@ -1289,10 +1455,129 @@ const formatDateFull = (timestamp: number) => {
 
             <img 
               :src="selectedImage.url" 
-              class="max-w-full max-h-full object-contain rounded-xl shadow-2xl transition-all cursor-pointer md:cursor-default" 
+              class="max-w-full max-h-full object-contain rounded-xl shadow-lg border border-gray-100 dark:border-gray-800/80 transition-all cursor-pointer md:cursor-default" 
               @click="toggleMobileImage"
               :title="isMobileImageExpanded ? '点击还原' : undefined"
             />
+          </div>
+
+          <!-- 底部缩略图画廊切换栏 (Filmstrip) -->
+          <div 
+            v-if="filteredImages.length > 0 && showFilmstrip"
+            class="shrink-0 bg-gray-50/95 dark:bg-gray-900/95 border-t border-gray-200 dark:border-gray-800 backdrop-blur-md px-3 py-1.5 flex flex-col gap-1 select-none z-10 transition-all duration-200"
+          >
+            <!-- 顶部微信息与控制栏 -->
+            <div class="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+              <div class="flex items-center gap-2">
+                <span class="font-medium text-gray-700 dark:text-gray-300">画廊缩略图</span>
+                <span class="font-mono text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200/60 dark:border-blue-800/60">
+                  {{ currentImageIndex >= 0 ? currentImageIndex + 1 : '-' }} / {{ filteredImages.length }}
+                </span>
+              </div>
+
+              <div class="flex items-center gap-1">
+                <!-- 左右滚动按钮 (PC端便捷滑动) -->
+                <div class="hidden sm:flex items-center gap-0.5">
+                  <button 
+                    type="button"
+                    @click="scrollFilmstrip('left')"
+                    class="p-1 rounded-md hover:bg-gray-200/70 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition active:scale-95 cursor-pointer"
+                    title="向左滚动缩略图"
+                  >
+                    <ChevronLeft class="w-3.5 h-3.5" />
+                  </button>
+                  <button 
+                    type="button"
+                    @click="scrollFilmstrip('right')"
+                    class="p-1 rounded-md hover:bg-gray-200/70 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition active:scale-95 cursor-pointer"
+                    title="向右滚动缩略图"
+                  >
+                    <ChevronRight class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <!-- 收起按钮 -->
+                <button 
+                  type="button"
+                  @click="showFilmstrip = false"
+                  class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-200/60 dark:hover:bg-gray-800 transition active:scale-95 cursor-pointer"
+                  title="收起缩略图切换栏"
+                >
+                  <span>收起</span>
+                  <ChevronDown class="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+
+            <!-- 横向滚动缩略图容器 -->
+            <div 
+              ref="filmstripContainer"
+              @wheel="handleFilmstripWheel"
+              class="relative flex items-center gap-2 overflow-x-auto py-1 px-0.5 custom-scrollbar"
+              style="overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch;"
+            >
+              <div 
+                v-for="(item, idx) in filteredImages"
+                :key="item.id"
+                :ref="(el) => setThumbnailRef(item.id, el)"
+                @click="selectThumbnail(item)"
+                @keydown.enter="selectThumbnail(item)"
+                @keydown.space.prevent="selectThumbnail(item)"
+                role="button"
+                tabindex="0"
+                class="group/thumb relative shrink-0 rounded-lg overflow-hidden cursor-pointer transition-all duration-150 border-2 select-none w-12 h-14 sm:w-14 sm:h-16 outline-none focus:ring-2 focus:ring-blue-500/50"
+                :class="[
+                  selectedImage?.id === item.id 
+                    ? 'border-blue-600 dark:border-blue-400 ring-2 ring-blue-500/30 scale-[1.02] z-10 shadow-md' 
+                    : 'border-transparent hover:border-gray-300 dark:hover:border-gray-700 opacity-60 hover:opacity-100'
+                ]"
+                :title="`切换到第 ${idx + 1} 张 (${item.params.width}x${item.params.height})`"
+              >
+                <img 
+                  :src="item.url" 
+                  loading="lazy"
+                  decoding="async"
+                  draggable="false"
+                  class="w-full h-full object-cover bg-gray-100 dark:bg-gray-800 transition-transform duration-200 group-hover/thumb:scale-105" 
+                />
+                <!-- 超分标识 -->
+                <div 
+                  v-if="isImageUpscaled(item)" 
+                  class="absolute bottom-0 right-0 bg-amber-500 text-white text-[8px] font-bold px-1 rounded-tl leading-tight"
+                >
+                  超分
+                </div>
+                <!-- 序号小角标 -->
+                <div 
+                  class="absolute top-0 left-0 text-white text-[8px] font-mono px-1 rounded-br leading-tight transition-colors"
+                  :class="selectedImage?.id === item.id ? 'bg-blue-600 font-bold' : 'bg-black/60'"
+                >
+                  {{ idx + 1 }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 收起状态下的迷你触发栏 -->
+          <div 
+            v-else-if="filteredImages.length > 0"
+            class="shrink-0 bg-gray-50/90 dark:bg-gray-900/90 border-t border-gray-200 dark:border-gray-800 backdrop-blur-md px-3 py-1 flex items-center justify-between select-none z-10 text-[11px]"
+          >
+            <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+              <span class="font-medium text-gray-700 dark:text-gray-300">画廊缩略图</span>
+              <span class="font-mono text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200/60 dark:border-blue-800/60">
+                {{ currentImageIndex >= 0 ? currentImageIndex + 1 : '-' }} / {{ filteredImages.length }}
+              </span>
+            </div>
+            <button 
+              type="button"
+              @click="showFilmstrip = true"
+              class="flex items-center gap-0.5 px-2 py-0.5 rounded-md text-[10px] text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition active:scale-95 cursor-pointer font-medium"
+              title="展开缩略图切换栏"
+            >
+              <span>展开缩略图</span>
+              <ChevronUp class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
