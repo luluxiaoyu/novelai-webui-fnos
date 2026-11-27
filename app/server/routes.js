@@ -185,28 +185,10 @@ router.post('/storage/validate-path', async (req, res) => {
     const target = await storageManager.assertStorageAccess(req, targetPath);
     const result = storageManager.validatePath(target, false);
     if (result.writable) {
-      let message = '目录读写检查通过';
-      const cfg = getConfig();
-      let currentPath = path.resolve(cfg.storagePath);
-      // An inaccessible current directory should not block testing another candidate.
-      try { currentPath = storageManager.canonicalPath(currentPath); } catch {}
-      if (target === currentPath) {
-        const profile = cfg.activeProfile || 'Default';
-        try {
-          message = profileManager.testProfileWriteAccess(profile)
-            ? `目录和当前存档「${profile}」读写检查通过`
-            : `目录读写检查通过，当前存档「${profile}」尚无数据库可检查`;
-        } catch (error) {
-          console.error(`[ProfileStorage] 检查存档「${profile}」写入权限失败:`, error.errcode ?? error.code, error.message, error.storageDetail || '');
-          return res.json({
-            success: false,
-            path: targetPath.trim(),
-            exists: true,
-            writable: false,
-            error: `目录可写，存档「${profile}」写入检查失败。${error.storageDetail || profileStorageErrorMessage(error)}`
-          });
-        }
-      }
+      const { checkedProfiles } = result;
+      const message = checkedProfiles.length
+        ? `目录和 ${checkedProfiles.length} 个存档数据库的读写检查通过`
+        : '目录读写检查通过，尚无数据库可检查';
       return res.json({
         success: true,
         path: targetPath.trim(),
@@ -264,7 +246,7 @@ router.post('/storage/merge', async (req, res) => {
     if (storageManager.canonicalPath(src) !== storageManager.canonicalPath(currentCfg.storagePath)) {
       return res.status(400).json({ success: false, error: '合并来源必须是当前生效的存储目录' });
     }
-    await storageManager.assertStorageAccess(req, src);
+    await storageManager.assertStorageAccess(req, src, { requireWrite: false });
     const target = await storageManager.assertStorageAccess(req, targetPath);
     const startResult = storageManager.startMergeJob(src, target, !!switchOnComplete);
     res.json({

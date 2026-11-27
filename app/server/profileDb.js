@@ -486,17 +486,19 @@ function testWriteAccess(profileDir) {
   const dir = path.resolve(profileDir);
   const dbPath = path.join(dir, 'profile.db');
   try {
-    if (!fs.statSync(dbPath, { throwIfNoEntry: false })) return false;
+    const database = fs.lstatSync(dbPath, { throwIfNoEntry: false });
+    if (!database) return false;
+    if (!database.isFile()) throw new Error('profile.db 必须是存档目录内的普通文件');
     const readWrite = fs.constants.R_OK | fs.constants.W_OK;
     fs.accessSync(dir, readWrite | fs.constants.X_OK);
     fs.accessSync(dbPath, readWrite);
     // Opening a read-only database can create WAL files with the same read-only mode.
     for (const suffix of ['-wal', '-shm']) {
-      try {
-        fs.accessSync(dbPath + suffix, readWrite);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
+      const filePath = dbPath + suffix;
+      const file = fs.lstatSync(filePath, { throwIfNoEntry: false });
+      if (!file) continue;
+      if (!file.isFile()) throw new Error(`${path.basename(filePath)} 必须是存档目录内的普通文件`);
+      fs.accessSync(filePath, readWrite);
     }
     const cached = dbCache.get(dir);
     if (cached) {

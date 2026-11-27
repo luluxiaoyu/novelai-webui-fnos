@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 const { getConfig, updateConfig, DATA_DIR } = require('./configManager');
-const { closeAllDbs, initDbSchema } = require('./profileDb');
+const { closeAllDbs, initDbSchema, testWriteAccess } = require('./profileDb');
 const { isFnosRuntime, assertStorageAdmin, callFnosApi, checkUserPaths } = require('./fnosApi');
 const mergeConnections = new Set();
 
@@ -173,7 +173,7 @@ async function getAuthorizedPaths(req) {
   return { currentPath, paths, authorizationStatus: authorization.authorizationStatus, warning: authorization.warning };
 }
 
-async function assertStorageAccess(req, targetPath) {
+async function assertStorageAccess(req, targetPath, { requireWrite = true } = {}) {
   assertStorageAdmin(req);
   if (typeof targetPath !== 'string' || !path.isAbsolute(targetPath.trim()) || targetPath.includes('\0') || targetPath.split(/[\\/]/).includes('..')) {
     throw new Error('请提供不含上级目录跳转的绝对路径');
@@ -197,8 +197,8 @@ async function assertStorageAccess(req, targetPath) {
     while (!fs.existsSync(existingPath) && path.dirname(existingPath) !== existingPath) existingPath = path.dirname(existingPath);
     const acls = await checkUserPaths(req, [existingPath]);
     const acl = acls.find(item => item.path === existingPath);
-    if (!acl?.readable || !acl?.writable) {
-      const error = new Error('当前飞牛用户没有目标目录的读写权限');
+    if (!acl?.readable || (requireWrite && !acl.writable)) {
+      const error = new Error(requireWrite ? '当前飞牛用户没有目标目录的读写权限' : '当前飞牛用户没有源目录的读取权限');
       error.statusCode = 403;
       throw error;
     }
@@ -207,7 +207,7 @@ async function assertStorageAccess(req, targetPath) {
 }
 
 /**
- * Validate a candidate storage path
+ * Validate a storage directory and any existing profile databases within it.
  * @param {string} targetPath 
  * @param {boolean} [createIfMissing=false] 
  * @returns {{ exists: boolean, writable: boolean, reason: string | null }}
@@ -224,7 +224,44 @@ function validatePath(targetPath, createIfMissing = false) {
       return { exists: false, writable: false, reason: `创建目录失败: ${err.message}` };
     }
   }
-  return testPathWritable(cleanPath);
+  const result = testPathWritable(cleanPath);
+  if (!result.writable) return result;
+  try {
+    return { ...result, checkedProfiles: checkStorageProfiles(cleanPath) };
+  } catch (error) {
+    return { ...result, writable: false, reason: error.message };
+  }
+}
+
+function checkStorageProfiles(storagePath) {
+  const dir = path.join(storagePath, 'profiles');
+  const stats = fs.lstatSync(dir, { throwIfNoEntry: false });
+  if (!stats) return [];
+  if (!stats.isDirectory()) throw new Error('存储目录中的 profiles 必须是普通文件夹');
+
+  const mode = fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK;
+  try {
+    fs.accessSync(dir, mode);
+  } catch (error) {
+    throw new Error(`目录可写，应用账号无法读写存档目录 profiles（${error.code}）`);
+  }
+
+  const checkedProfiles = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const profileDir = path.join(dir, entry.name);
+    try {
+      fs.accessSync(profileDir, mode);
+      if (testWriteAccess(profileDir)) checkedProfiles.push(entry.name);
+    } catch (error) {
+      console.error(`[ProfileStorage] 检查存档「${entry.name}」写入权限失败:`, error.errcode ?? error.code, error.message);
+      const detail = error.storageDetail || (error.syscall === 'access'
+        ? `应用账号无法读写存档子目录（${error.code}）`
+        : error.message);
+      throw new Error(`目录可写，存档「${entry.name}」写入检查失败。${detail}。请在飞牛文件管理的「详细信息 → 权限」检查该存档的文件权限`);
+    }
+  }
+  return checkedProfiles;
 }
 
 /**
@@ -239,17 +276,7 @@ function switchStoragePath(newPath) {
 
   const cleanPath = canonicalPath(newPath.trim());
 
-  // Ensure target folder exists or create it
-  if (!fs.existsSync(cleanPath)) {
-    try {
-      fs.mkdirSync(cleanPath, { recursive: true });
-    } catch (mkdirErr) {
-      throw new Error(`创建目标存储目录失败: ${mkdirErr.message}。请检查父目录写权限`);
-    }
-  }
-
-  // Validate writability
-  const check = testPathWritable(cleanPath);
+  const check = validatePath(cleanPath, true);
   if (!check.writable) {
     throw new Error(check.reason || '目标存储目录无写权限，无法切换');
   }
@@ -351,41 +378,29 @@ function scanFilesToCopy(sourceDir, targetDir, currentRelDir = '', filesToCopy =
 function scanProfileDbs(sourceDir) {
   const profilesDir = path.join(sourceDir, 'profiles');
   const dbs = [];
-  if (!fs.existsSync(profilesDir)) return dbs;
+  if (!fs.statSync(profilesDir, { throwIfNoEntry: false })) return dbs;
 
-  let entries = [];
-  try {
-    entries = fs.readdirSync(profilesDir, { withFileTypes: true });
-  } catch {
-    return dbs;
-  }
-
-  for (const entry of entries) {
+  const tables = ['history', 'prompt_history', 'styles', 'prompt_groups', 'characters', 'profile_settings'];
+  for (const entry of fs.readdirSync(profilesDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
     const profileName = entry.name;
     const dbPath = path.join(profilesDir, profileName, 'profile.db');
-    if (fs.existsSync(dbPath)) {
+    if (!fs.statSync(dbPath, { throwIfNoEntry: false })) continue;
+
+    let db;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      const existing = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all().map(row => row.name));
       let recordCount = 0;
-      try {
-        const db = new DatabaseSync(dbPath, { readOnly: true });
-        const tables = ['history', 'prompt_history', 'styles', 'prompt_groups', 'characters', 'profile_settings'];
-        for (const t of tables) {
-          try {
-            const countRow = db.prepare(`SELECT COUNT(*) as count FROM ${t}`).get();
-            if (countRow && countRow.count) {
-              recordCount += Number(countRow.count);
-            }
-          } catch {}
-        }
-        db.close();
-      } catch (err) {
-        console.warn(`[StorageManager] Failed to count DB records for ${profileName}:`, err.message);
+      for (const table of tables) {
+        if (!existing.has(table)) continue;
+        recordCount += Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
       }
-      dbs.push({
-        profileName,
-        dbPath,
-        recordCount
-      });
+      dbs.push({ profileName, dbPath, recordCount });
+    } catch (error) {
+      throw new Error(`无法读取源存档「${profileName}」，合并已停止。${error.message}`);
+    } finally {
+      db?.close();
     }
   }
 
@@ -430,11 +445,7 @@ async function mergeStorageData(sourceDir, targetDir, onProgress = () => {}, swi
     return { success: true, filesCopied: 0, recordsMerged: 0, storagePath: cleanTarget };
   }
 
-  // Ensure target exists and is writable
-  if (!fs.existsSync(cleanTarget)) {
-    fs.mkdirSync(cleanTarget, { recursive: true });
-  }
-  const check = testPathWritable(cleanTarget);
+  const check = validatePath(cleanTarget, true);
   if (!check.writable) {
     throw new Error(check.reason || '目标存储目录无写入权限，无法执行合并');
   }

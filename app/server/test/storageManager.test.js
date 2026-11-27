@@ -237,12 +237,13 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
 
   test('validating the current storage checks SQLite without changing the active profile or its data', async () => {
     const previous = configManager.getConfig();
-    const root = configManager.DATA_DIR;
+    const root = path.join(configManager.DATA_DIR, 'permission_probe');
     const profile = 'StoragePermissionTest';
     const profileDir = path.join(root, 'profiles', profile);
     const dbPath = path.join(profileDir, 'profile.db');
     const validate = () => invoke('POST', '/storage/validate-path', { path: root });
 
+    fs.mkdirSync(root, { recursive: true });
     configManager.updateConfig({ storagePath: root, activeProfile: profile });
     try {
       const missing = await validate();
@@ -253,7 +254,7 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
       profileDb.saveSetting(db, 'params', { width: 1024 });
       const writable = await validate();
       assert.equal(writable.data.success, true);
-      assert.match(writable.data.message, /StoragePermissionTest.*通过/);
+      assert.match(writable.data.message, /1 个存档数据库的读写检查通过/);
       assert.equal(profileDb.getSettings(db).params, '{"width":1024}');
       assert.equal(profileDb.getSettings(db)._storage_write_probe, undefined);
       profileDb.closeDb(profileDir);
@@ -291,6 +292,33 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
       if (fs.existsSync(dbPath)) fs.chmodSync(dbPath, 0o644);
       fs.rmSync(profileDir, { recursive: true, force: true });
       configManager.updateConfig({ storagePath: previous.storagePath, activeProfile: previous.activeProfile });
+    }
+  });
+
+  test('a writable destination with a read-only database cannot replace the active storage', async (t) => {
+    if (process.getuid?.() === 0) return t.skip('Requires an unprivileged process');
+    const active = configManager.getConfig().storagePath;
+    const target = path.join(configManager.DATA_DIR, 'read_only_candidate');
+    const profileDir = path.join(target, 'profiles', 'Default');
+    const dbPath = path.join(profileDir, 'profile.db');
+    profileDb.saveSetting(profileDb.getDb(profileDir), 'params', { prompt: 'Keep original data' });
+    profileDb.closeDb(profileDir);
+    fs.chmodSync(dbPath, 0o444);
+
+    try {
+      assert.equal(storageManager.testPathWritable(target).writable, true);
+      const probe = await invoke('POST', '/storage/validate-path', { path: target });
+      assert.equal(probe.data.success, false);
+      assert.match(probe.data.error, /存档「Default」.*profile\.db（EACCES）/);
+      const switched = await invoke('POST', '/storage/switch', { path: target });
+      assert.equal(switched.status, 400);
+      await assert.rejects(storageManager.mergeStorageData(active, target), /存档「Default」.*profile\.db/);
+      assert.equal(configManager.getConfig().storagePath, active);
+      assert.equal(fs.existsSync(path.join(target, 'logs')), false);
+      assert.equal(fs.existsSync(dbPath + '-wal'), false);
+    } finally {
+      fs.chmodSync(dbPath, 0o644);
+      fs.rmSync(target, { recursive: true, force: true });
     }
   });
 
@@ -393,20 +421,22 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.ok(progressReports.some(p => p.phase === 'completed' && p.percent === 100));
   });
 
-  test('14. mergeStorageData merges SQLite records without duplicate key conflicts', async () => {
+  test('14. mergeStorageData merges records from a readable source without duplicate key conflicts', async () => {
     const { DatabaseSync } = require('node:sqlite');
     const srcDir = path.join(TEST_BASE, 'merge_src_db');
     const destDir = path.join(TEST_BASE, 'merge_dest_db');
     fs.mkdirSync(path.join(srcDir, 'profiles/Default'), { recursive: true });
     fs.mkdirSync(path.join(destDir, 'profiles/Default'), { recursive: true });
 
-    const srcDb = new DatabaseSync(path.join(srcDir, 'profiles/Default/profile.db'));
+    const srcDbPath = path.join(srcDir, 'profiles/Default/profile.db');
+    const srcDb = new DatabaseSync(srcDbPath);
     profileDb.initDbSchema(srcDb);
     // Source records
     srcDb.prepare(`INSERT INTO history (id, url, timestamp, prompt) VALUES (?, ?, ?, ?)`).run('shared_id', '/api/images/Default/shared.png', 1000, 'src prompt');
     srcDb.prepare(`INSERT INTO history (id, url, timestamp, prompt) VALUES (?, ?, ?, ?)`).run('src_unique_id', '/api/images/Default/unique.png', 2000, 'unique prompt');
     srcDb.prepare(`INSERT INTO styles (id, name, prompt) VALUES (?, ?, ?)`).run('src_style_1', 'Src Style', 'style prompt');
     srcDb.close();
+    fs.chmodSync(srcDbPath, 0o444);
 
     const destDb = new DatabaseSync(path.join(destDir, 'profiles/Default/profile.db'));
     profileDb.initDbSchema(destDb);
@@ -436,8 +466,22 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     const styles = checkDb.prepare(`SELECT * FROM styles`).all();
     assert.equal(styles.length, 1);
     assert.equal(styles[0].name, 'Src Style');
+    assert.equal(fs.statSync(srcDbPath).mode & 0o777, 0o444);
 
     checkDb.close();
+  });
+
+  test('merge stops before switching when an existing source database cannot be read', async () => {
+    const active = configManager.getConfig().storagePath;
+    const source = path.join(TEST_BASE, 'unreadable_merge_source');
+    const profileDir = path.join(source, 'profiles', 'Default');
+    const target = path.join(TEST_BASE, 'unreadable_merge_target');
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(path.join(profileDir, 'profile.db'), 'invalid sqlite header');
+
+    await assert.rejects(storageManager.mergeStorageData(source, target), /无法读取源存档「Default」/);
+    assert.equal(configManager.getConfig().storagePath, active);
+    assert.equal(fs.existsSync(path.join(target, 'profiles', 'Default', 'profile.db')), false);
   });
 
   test('15. startMergeJob and getMergeJobStatus track asynchronous merge progress', async () => {

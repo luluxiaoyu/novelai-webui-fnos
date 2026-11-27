@@ -563,6 +563,10 @@ const brushSize = ref(30);
 // 大图缩放与拖拽查看
 const imgScale = ref(1);
 const imgTranslate = ref({ x: 0, y: 0 });
+const imageTransform = computed(() => {
+  const { x, y } = imgTranslate.value;
+  return x || y || imgScale.value !== 1 ? `translate(${x}px, ${y}px) scale(${imgScale.value})` : undefined;
+});
 const isPanning = ref(false);
 const panStart = ref({ x: 0, y: 0 });
 
@@ -912,30 +916,6 @@ const handlePickNasImageForInspection = async () => {
 const openingNasId = ref<string | null>(null);
 const activeCanvasNasMenu = ref(false);
 const activeSidebarNasMenuId = ref<string | null>(null);
-const canvasNasMenuPlacement = ref<'top' | 'bottom'>('top');
-const canvasFolderButtonRef = ref<HTMLElement | null>(null);
-
-const toggleCanvasNasMenu = (e?: MouseEvent) => {
-  if (activeCanvasNasMenu.value) {
-    activeCanvasNasMenu.value = false;
-    return;
-  }
-  const target = (e?.currentTarget as HTMLElement) || canvasFolderButtonRef.value;
-  if (target) {
-    const rect = target.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const spaceAbove = rect.top;
-    // 菜单高度约 85px，如果下方高度小于 120px 且上方空间充裕，则上拉弹出，否则下拉
-    if (spaceBelow < 120 && spaceAbove > spaceBelow) {
-      canvasNasMenuPlacement.value = 'top';
-    } else {
-      canvasNasMenuPlacement.value = 'bottom';
-    }
-  } else {
-    canvasNasMenuPlacement.value = 'top';
-  }
-  activeCanvasNasMenu.value = true;
-};
 
 const sidebarMenuPlacementMap = ref<Record<string, 'top' | 'bottom'>>({});
 const toggleSidebarNasMenu = (id: string, e?: MouseEvent) => {
@@ -1008,6 +988,10 @@ const imageModeOptions = [
 ] as const;
 const supportsInpaintStrength = computed(() => /-4|-5|v4|v5/.test(genStore.params.model));
 const isCurrentBaseImage = computed(() => !!inpaintImageSrc.value && genStore.currentImage?.url === inpaintImageSrc.value);
+const isMaskEditing = computed(() => showMaskEditor.value && Boolean(inpaintImageSrc.value));
+const canvasImageSrc = computed(() => isMaskEditing.value
+  ? inpaintImageSrc.value
+  : genStore.streamPreviewUrl || genStore.currentImage?.url);
 const needsInpaintMask = computed(() => Boolean(genStore.params.image && genStore.imageMode === 'inpaint' && !genStore.params.mask));
 const generationLabel = computed(() => {
   if (!genStore.params.image) return '立即生成图像';
@@ -1015,13 +999,16 @@ const generationLabel = computed(() => {
   return '生成局部重绘';
 });
 
-watch(() => genStore.imageMode, mode => {
-  if (mode === 'img2img') showMaskEditor.value = false;
-});
-
 const maskCanvasReady = ref(false);
 const isOpeningMaskEditor = ref(false);
 const maskEditorError = ref('');
+
+watch(() => genStore.imageMode, mode => {
+  if (mode === 'img2img') showMaskEditor.value = false;
+  activeCanvasNasMenu.value = false;
+  maskEditorError.value = '';
+});
+
 const openInpaintEditor = async (url?: string) => {
   const targetUrl = url || genStore.currentImage?.url;
   if (!targetUrl || isOpeningMaskEditor.value) return;
@@ -1031,7 +1018,7 @@ const openInpaintEditor = async (url?: string) => {
   try {
     if (targetUrl !== inpaintImageSrc.value) await genStore.sendToInpaint(targetUrl);
     genStore.imageMode = 'inpaint';
-    maskCanvasReady.value = false;
+    activeCanvasNasMenu.value = false;
     showMaskEditor.value = true;
     mobileTab.value = 'canvas';
     resetZoom();
@@ -1072,17 +1059,17 @@ const applyDimensionsAndMask = (w: number, h: number) => {
   maskImg.src = rawMask.startsWith('data:') ? rawMask : `data:image/png;base64,${rawMask}`;
 };
 
-const handleInpaintImgLoaded = (e: Event) => {
-  const img = e.target as HTMLImageElement;
-  if (!img || maskCanvasReady.value) return;
-  const w = img.naturalWidth || img.width;
-  const h = img.naturalHeight || img.height;
-  if (w > 0 && h > 0) {
-    applyDimensionsAndMask(w, h);
+watch([canvasRef, inpaintImageSrc], ([canvas]) => {
+  maskCanvasReady.value = false;
+  stopDraw();
+  if (canvas) {
+    const { width, height } = genStore.generationSize;
+    applyDimensionsAndMask(width, height);
   }
-};
+}, { flush: 'post' });
 
 const handleInpaintImgError = () => {
+  if (!isMaskEditing.value) return;
   showMaskEditor.value = false;
   maskEditorError.value = '重绘底图无法显示，请重新选择底图后重试';
 };
@@ -1604,20 +1591,21 @@ watch(
       </header>
 
     <!-- 工作台页 (桌面端三栏并排各卡片内部滚动，手机端支持底部选项卡折叠切换) -->
-    <main class="p-3 md:p-4 flex flex-col lg:flex-row gap-4 flex-1 min-h-0 overflow-hidden relative">
+    <main class="p-3 md:p-4 flex flex-col lg:flex-row gap-2 lg:gap-4 flex-1 min-h-0 overflow-hidden supports-[overflow:clip]:overflow-clip relative">
       
       <!-- 移动端半透明背景遮罩 -->
       <div 
         v-if="mobileTab !== 'canvas'" 
         @click="mobileTab = 'canvas'"
-        class="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden animate-fade-in"
+        class="fixed inset-0 bg-black/50 z-30 lg:hidden"
       ></div>
 
-      <!-- 移动端底部悬浮导航 (胶囊栏) -->
-      <div class="lg:hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border border-gray-200/50 dark:border-gray-700/50 rounded-full p-1.5 flex items-center gap-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] z-50 transition-colors">
+      <!-- 移动端底部导航 -->
+      <nav aria-label="工作台" class="relative order-last lg:hidden mx-auto shrink-0 bg-white dark:bg-gray-900 border border-gray-200/50 dark:border-gray-700/50 rounded-full p-1.5 flex items-center gap-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] z-50 transition-colors">
         <button 
           @click="mobileTab = mobileTab === 'controls' ? 'canvas' : 'controls'" 
-          class="flex flex-col items-center justify-center w-16 h-12 rounded-full transition-all duration-300"
+          :aria-pressed="mobileTab === 'controls'"
+          class="flex flex-col items-center justify-center w-16 h-12 rounded-full transition-colors"
           :class="mobileTab === 'controls' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
         >
           <SlidersHorizontal class="w-5 h-5 mb-0.5" />
@@ -1625,7 +1613,8 @@ watch(
         </button>
         <button 
           @click="mobileTab = 'canvas'" 
-          class="flex flex-col items-center justify-center w-16 h-12 rounded-full transition-all duration-300"
+          :aria-pressed="mobileTab === 'canvas'"
+          class="flex flex-col items-center justify-center w-16 h-12 rounded-full transition-colors"
           :class="mobileTab === 'canvas' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
         >
           <ImageIcon class="w-5 h-5 mb-0.5" />
@@ -1633,14 +1622,15 @@ watch(
         </button>
         <button 
           @click="mobileTab = mobileTab === 'history' ? 'canvas' : 'history'" 
-          class="flex flex-col items-center justify-center w-16 h-12 rounded-full transition-all duration-300 relative"
+          :aria-pressed="mobileTab === 'history'"
+          class="flex flex-col items-center justify-center w-16 h-12 rounded-full transition-colors relative"
           :class="mobileTab === 'history' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
         >
           <Layers class="w-5 h-5 mb-0.5" />
           <span class="text-[10px] font-medium leading-none">历史</span>
           <div v-if="filteredHistory.some(i => i.isNew)" class="absolute top-0.5 right-1 bg-blue-500 text-white text-[8px] font-bold px-1 py-px rounded border border-white dark:border-gray-900 shadow-sm leading-tight">新</div>
         </button>
-      </div>
+      </nav>
 
       <!-- 左侧控制面板 (独立卡片内部滚动，移动端作为左侧抽屉) -->
       <aside 
@@ -1648,7 +1638,7 @@ watch(
           w-[85vw] max-w-sm lg:max-w-none lg:w-96 flex-shrink-0 bg-white dark:bg-gray-900 
           lg:rounded-2xl border-r lg:border lg:border-gray-200 dark:border-gray-800 
           p-5 overflow-y-auto custom-scrollbar flex flex-col gap-5 shadow-2xl lg:shadow-sm 
-          transition-transform duration-300 ease-in-out h-full
+          transition-transform lg:transition-none duration-300 ease-in-out h-full
           fixed inset-y-0 left-0 z-40 lg:static lg:transform-none lg:translate-x-0 pb-24 lg:pb-5
         "
         :class="mobileTab === 'controls' ? 'translate-x-0' : '-translate-x-full'"
@@ -2285,14 +2275,14 @@ watch(
               </div>
               <fieldset class="grid grid-cols-2 gap-2">
                 <legend class="sr-only">底图生成模式</legend>
-                <label v-for="choice in imageModeOptions" :key="choice.value" class="cursor-pointer text-center">
-                  <input v-model="genStore.imageMode" type="radio" :value="choice.value" name="image-mode" class="peer sr-only" />
+                <label v-for="choice in imageModeOptions" :key="choice.value" class="relative cursor-pointer text-center">
+                  <input v-model="genStore.imageMode" type="radio" :value="choice.value" name="image-mode" class="peer sr-only left-1/2 top-1/2" />
                   <span class="block rounded-lg border border-gray-300 dark:border-gray-700 px-2 py-2 font-medium peer-checked:border-blue-500 peer-checked:bg-blue-100 peer-checked:text-blue-800 dark:peer-checked:bg-blue-950 dark:peer-checked:text-blue-200 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500">{{ choice.label }}</span>
                 </label>
               </fieldset>
               <div class="relative w-full h-32 rounded-lg overflow-hidden border border-gray-300 dark:border-gray-700 bg-black/10">
                 <img :src="inpaintImageSrc" alt="生成底图" class="absolute inset-0 w-full h-full object-contain" />
-                <img v-if="genStore.imageMode === 'inpaint' && genStore.params.mask" :src="'data:image/png;base64,' + genStore.params.mask" alt="" class="absolute inset-0 w-full h-full object-contain mix-blend-screen opacity-50 pointer-events-none" />
+                <img v-if="genStore.imageMode === 'inpaint' && genStore.params.mask" :src="'data:image/png;base64,' + genStore.params.mask" alt="" class="absolute inset-0 w-full h-full object-contain opacity-50 pointer-events-none" />
               </div>
               <template v-if="genStore.imageMode === 'img2img'">
                 <label class="flex flex-col gap-1">
@@ -2321,30 +2311,31 @@ watch(
         </div>
       </aside>
 
-      <!-- 中间正中央主画布区 (内部独立缩放、拖拽与固定视口) -->
-      <section 
-        class="flex-1 flex flex-col min-w-0 h-full relative overflow-hidden bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded-2xl shadow-inner transition-colors lg:flex"
-      >
-        <!-- 顶部缩放与重置控制条 -->
-        <div class="absolute top-4 left-4 z-20 flex items-center gap-1.5 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-gray-200 dark:border-gray-800 shadow-md text-xs">
-          <button @click="zoomOut" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded text-gray-700 dark:text-gray-300 transition" title="缩小">
-            <Minus class="w-3.5 h-3.5" />
-          </button>
-          <span class="font-mono text-gray-700 dark:text-gray-200 font-semibold px-1 min-w-[3.2rem] text-center">{{ Math.round(imgScale * 100) }}%</span>
-          <button @click="zoomIn" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded text-gray-700 dark:text-gray-300 transition" title="放大">
-            <Plus class="w-3.5 h-3.5" />
-          </button>
-          <div class="w-px h-3.5 bg-gray-200 dark:bg-gray-700 mx-0.5"></div>
-          <button @click="resetZoom" class="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded text-gray-700 dark:text-gray-300 transition text-[11px] font-medium flex items-center gap-1" title="自适应居中">
-            <RotateCcw class="w-3 h-3" />
-            自适应
-          </button>
-          <span class="text-gray-400 text-[10px] hidden md:inline ml-1">双指缩放 / 滚轮 / 拖拽</span>
+      <!-- 主画布 -->
+      <section aria-label="画布" class="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded-2xl shadow-inner">
+        <div class="shrink-0 flex flex-wrap items-center gap-2 px-2 pt-2">
+          <!-- 顶部缩放与重置控制条 -->
+          <div class="flex items-center gap-1.5 bg-white dark:bg-gray-900 px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-800 text-xs">
+            <button @click="zoomOut" class="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-800 rounded text-gray-700 dark:text-gray-300 transition" title="缩小">
+              <Minus class="w-3.5 h-3.5" />
+            </button>
+            <span class="font-mono text-gray-700 dark:text-gray-200 font-semibold px-1 min-w-[3.2rem] text-center">{{ Math.round(imgScale * 100) }}%</span>
+            <button @click="zoomIn" class="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-800 rounded text-gray-700 dark:text-gray-300 transition" title="放大">
+              <Plus class="w-3.5 h-3.5" />
+            </button>
+            <div class="w-px h-3.5 bg-gray-200 dark:bg-gray-700 mx-0.5"></div>
+            <button @click="resetZoom" class="min-h-7 px-2 py-0.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded text-gray-700 dark:text-gray-300 transition text-[11px] font-medium flex items-center gap-1" title="自适应居中">
+              <RotateCcw class="w-3 h-3" />
+              自适应
+            </button>
+          </div>
+          <span v-if="isCurrentBaseImage && !genStore.streamPreviewUrl" class="rounded-full bg-blue-600 text-white text-xs px-3 py-1.5 font-medium">
+            {{ genStore.imageMode === 'img2img' ? '图生图底图' : genStore.params.mask ? '已标记重绘区域' : '待绘制重绘区域' }}
+          </span>
         </div>
 
-        <!-- 交互画布容器 -->
-        <div 
-          class="flex-1 w-full h-full flex items-center justify-center overflow-hidden cursor-grab active:cursor-grabbing select-none touch-none"
+        <div
+          class="relative flex-1 min-h-0 flex items-center justify-center overflow-hidden cursor-grab active:cursor-grabbing select-none touch-none"
           @wheel="handleWheel"
           @mousedown="startPan"
           @mousemove="doPan"
@@ -2353,163 +2344,34 @@ watch(
           @touchstart="handleTouchStart"
           @touchmove="handleTouchMove"
           @touchend="handleTouchEnd"
+          @touchcancel="handleTouchEnd"
         >
-          <!-- 局部重绘 涂鸦模式 -->
-          <template v-if="genStore.params.image && showMaskEditor">
-            <div class="absolute inset-0 flex items-center justify-center [container-type:size]">
-              <div
-                class="flex items-center justify-center max-w-full max-h-full"
-                :class="[
-                  (isPanning || isTouchPanning) ? 'transition-none will-change-transform' : 'transition-transform duration-75 ease-out'
-                ]"
-                :style="{ transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})` }"
-              >
-                <div class="relative shadow-2xl rounded-lg overflow-hidden border border-gray-300 dark:border-gray-700 shrink-0 select-none">
-                  <!-- 底图 -->
-                  <img
-                    :src="inpaintImageSrc"
-                    class="block max-w-[calc(100cqw_-_1rem)] max-h-[calc(100cqh_-_6rem)] w-auto h-auto pointer-events-none select-none"
-                    draggable="false"
-                    @load="handleInpaintImgLoaded"
-                    @error="handleInpaintImgError"
-                  />
-                  <!-- 遮罩涂抹 Canvas -->
-                  <canvas
-                    ref="canvasRef"
-                    class="absolute inset-0 w-full h-full cursor-crosshair opacity-75 touch-none"
-                    @mousedown.stop="startDraw"
-                    @mousemove.stop="draw"
-                    @mouseup.stop="stopDraw"
-                    @mouseleave.stop="stopDraw"
-                    @touchstart.stop.prevent="startDraw"
-                    @touchmove.stop.prevent="draw"
-                    @touchend.stop="stopDraw"
-                  ></canvas>
-                </div>
-              </div>
-
-            </div>
-
-            <!-- 涂鸦悬浮工具栏 (移动端避免被底部导航遮挡，设置 bottom-24) -->
-            <div class="absolute bottom-24 sm:bottom-6 left-2 right-2 mx-auto w-fit flex flex-wrap justify-center items-center gap-2 sm:gap-4 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border border-gray-200 dark:border-gray-800 p-2.5 sm:p-3 rounded-2xl shadow-2xl z-30 max-w-full">
-              <div class="flex items-center gap-2">
-                <span class="text-xs text-gray-500 whitespace-nowrap font-medium">画笔大小:</span>
-                <input type="range" v-model.number="brushSize" min="5" max="150" class="w-24 sm:w-32 accent-blue-600" />
-                <span class="font-mono text-xs w-6 text-gray-600 dark:text-gray-300">{{ brushSize }}</span>
-              </div>
-              <div class="w-px h-6 bg-gray-200 dark:bg-gray-700"></div>
-              <button @click="resetMask" :disabled="!maskCanvasReady" class="text-xs text-gray-600 hover:text-red-500 font-medium transition whitespace-nowrap">重置</button>
-              <button @click="showMaskEditor = false; mobileTab = 'controls'" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 font-medium transition whitespace-nowrap">取消</button>
-              <button @click="saveMask" :disabled="!maskCanvasReady" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 sm:px-4 py-1.5 rounded-lg shadow-md shadow-blue-500/20 transition whitespace-nowrap">
-                保存重绘区域
-              </button>
-            </div>
-          </template>
-
-          <template v-else-if="genStore.streamPreviewUrl">
-            <div 
-              class="flex items-center justify-center max-w-full max-h-full"
-              :class="[
-                (isPanning || isTouchPanning) ? 'transition-none will-change-transform' : 'transition-transform duration-75 ease-out'
-              ]"
-              :style="{ transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})` }"
-            >
-              <img :src="genStore.streamPreviewUrl" class="max-w-[85vw] max-h-[85vh] object-contain drop-shadow-2xl pointer-events-none rounded-lg" />
-            </div>
-          </template>
-
-          <template v-else-if="genStore.currentImage">
-            <div 
-              class="flex items-center justify-center max-w-full max-h-full relative"
-              :class="[
-                (isPanning || isTouchPanning) ? 'transition-none will-change-transform' : 'transition-transform duration-75 ease-out'
-              ]"
-              :style="{ transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})` }"
-            >
-              <img :src="genStore.currentImage.url" class="max-w-[85vw] max-h-[85vh] object-contain drop-shadow-2xl pointer-events-none rounded-lg" />
-            </div>
-
-            <!-- 底图状态与操作按钮共用布局，窄画布时换行 -->
-            <div class="absolute top-4 left-4 right-4 sm:top-auto sm:bottom-4 flex flex-wrap justify-end items-center gap-1.5 sm:gap-2 z-30 pointer-events-none [&>*]:pointer-events-auto">
-              <span v-if="isCurrentBaseImage" class="rounded-full bg-blue-600 text-white text-xs px-3 py-1.5 font-medium">
-                {{ genStore.imageMode === 'img2img' ? '图生图底图' : genStore.params.mask ? '已标记重绘区域' : '待绘制重绘区域' }}
-              </span>
-              <div class="flex items-center gap-1.5 sm:gap-2">
-                <button 
-                  @click="openInpaintEditor(genStore.currentImage?.url)"
-                  :disabled="isOpeningMaskEditor"
-                  class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md flex items-center justify-center active:scale-95" 
-                  title="局部重绘"
-                >
-                  <Paintbrush class="w-4 h-4 sm:w-5 sm:h-5 text-blue-500" />
-                </button>
-                <button 
-                  @click="openUpscaleModal(genStore.currentImage)" 
-                  :disabled="isImageUpscaled(genStore.currentImage)"
-                  class="border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md flex items-center justify-center active:scale-95" 
-                  :class="isImageUpscaled(genStore.currentImage) ? 'bg-gray-100/90 dark:bg-gray-800/90 text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-40' : 'bg-white/95 hover:bg-amber-50 dark:bg-gray-900/95 dark:hover:bg-amber-950/40 text-gray-700 dark:text-gray-200 hover:text-amber-600 dark:hover:text-amber-400'"
-                  :title="isImageUpscaled(genStore.currentImage) ? '该图已完成超分，不可再次放大' : '超分辨率放大此图 (消耗 1 点数)'"
-                >
-                  <Sparkles class="w-4 h-4 sm:w-5 sm:h-5 text-amber-500" :class="{ 'grayscale opacity-50': isImageUpscaled(genStore.currentImage) }" />
-                </button>
-              </div>
-
-              <!-- 第 2 组操作 (移动端第 2 行 / PC端并排右侧)：在NAS打开、下载原图、复制、复用参数 -->
-              <div class="flex items-center gap-1.5 sm:gap-2">
-                <!-- 文件夹下拉操作菜单 (在飞牛宿主环境内展示，外部独立浏览器隐藏) -->
-                <div v-if="isInsideFnOS()" class="relative" ref="canvasFolderButtonRef">
-                  <button 
-                    type="button"
-                    @click.stop="toggleCanvasNasMenu($event)" 
-                    :disabled="openingNasId === genStore.currentImage?.id"
-                    class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 cursor-pointer disabled:opacity-50" 
-                    :class="activeCanvasNasMenu ? 'ring-2 ring-blue-500 text-blue-600 dark:text-blue-400' : ''"
-                    title="在 NAS 打开文件 / 定位文件夹"
-                  >
-                    <Loader2 v-if="openingNasId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                    <FolderOpen v-else class="w-4 h-4 sm:w-5 sm:h-5" />
-                  </button>
-
-                  <!-- 下拉菜单 (视视口剩余空间动态选择上拉或下拉，杜绝被屏幕边缘遮挡) -->
-                  <div 
-                    v-if="activeCanvasNasMenu"
-                    @click.stop
-                    class="absolute right-0 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs animate-fade-in select-none whitespace-nowrap"
-                    :class="canvasNasMenuPlacement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'"
-                  >
-                    <button 
-                      type="button"
-                      @click.stop="activeCanvasNasMenu = false; handleOpenFile(genStore.currentImage)"
-                      class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
-                    >
-                      <FileImage class="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                      <span>在NAS打开文件</span>
-                    </button>
-                    <button 
-                      type="button"
-                      @click.stop="activeCanvasNasMenu = false; handleOpenFolder(genStore.currentImage)"
-                      class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
-                    >
-                      <FolderSearch class="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span>定位文件夹</span>
-                    </button>
-                  </div>
-                </div>
-                <button @click="downloadImage" :disabled="openingMobileImageId !== null" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95 disabled:opacity-60" title="下载原图">
-                  <Loader2 v-if="openingMobileImageId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                  <Download v-else class="w-4 h-4 sm:w-5 sm:h-5" />
-                </button>
-                <button @click="copyImageToClipboard" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95" title="复制图像到剪贴板">
-                  <Check v-if="imageCopied" class="w-4 h-4 sm:w-5 sm:h-5 text-green-500" />
-                  <Copy v-else class="w-4 h-4 sm:w-5 sm:h-5" />
-                </button>
-                <button @click="handleUseParams" class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md active:scale-95" title="复用此图全部参数">
-                  <Check v-if="paramsCopied" class="w-4 h-4 sm:w-5 sm:h-5 text-green-500" />
-                  <SlidersHorizontal v-else class="w-4 h-4 sm:w-5 sm:h-5" />
-                </button>
-              </div>
-            </div>
-          </template>
+          <div
+            v-if="canvasImageSrc"
+            class="absolute inset-2 grid grid-cols-1 grid-rows-1 place-items-center"
+            :style="{ transform: imageTransform }"
+          >
+            <img
+              :src="canvasImageSrc"
+              :alt="isMaskEditing ? '重绘底图' : '画布预览'"
+              class="col-start-1 row-start-1 block w-auto h-auto max-w-full max-h-full rounded-lg pointer-events-none"
+              draggable="false"
+              @error="handleInpaintImgError"
+            />
+            <canvas
+              v-if="isMaskEditing"
+              ref="canvasRef"
+              class="col-start-1 row-start-1 block w-auto h-auto max-w-full max-h-full rounded-lg cursor-crosshair opacity-75 touch-none"
+              @mousedown.stop="startDraw"
+              @mousemove.stop="draw"
+              @mouseup.stop="stopDraw"
+              @mouseleave.stop="stopDraw"
+              @touchstart.stop.prevent="startDraw"
+              @touchmove.stop.prevent="draw"
+              @touchend.stop="stopDraw"
+              @touchcancel.stop="stopDraw"
+            ></canvas>
+          </div>
 
           <!-- 空白状态 / 生成中状态 (画布无任何图时展示) -->
           <div v-else class="text-gray-400 dark:text-gray-600 flex flex-col items-center justify-center gap-3">
@@ -2564,38 +2426,122 @@ watch(
           </div>
 
           <!-- 切换存档或刷新历史时的浮动加载提示 -->
-          <div 
+          <div
             v-if="genStore.isLoadingHistory && (genStore.currentImage || genStore.streamPreviewUrl)"
-            class="absolute top-14 left-4 z-30 flex items-center gap-2 bg-white/95 dark:bg-gray-900/95 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-300 px-3 py-1.5 rounded-full shadow-lg backdrop-blur-md text-xs font-medium animate-fade-in pointer-events-none select-none"
+            class="absolute top-14 left-4 z-30 flex items-center gap-2 bg-white/95 dark:bg-gray-900/95 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-300 px-3 py-1.5 rounded-full shadow-sm text-xs font-medium animate-fade-in pointer-events-none select-none"
           >
             <Loader2 class="w-3.5 h-3.5 animate-spin" />
             <span>正在读取 NAS 历史数据...</span>
           </div>
 
           <!-- 画布浮动状态标签 (排队中 / 作画中 / 流式渲染中，纯轻量悬浮胶囊，位于缩放条下方，绝不遮挡画布与控制条) -->
-          <div 
+          <div
             v-if="genStore.isGenerating && (genStore.currentImage || genStore.streamPreviewUrl)"
             class="absolute top-14 left-4 z-30 flex items-center gap-2 animate-fade-in pointer-events-none select-none"
           >
             <template v-if="genStore.queueInfo && genStore.queueInfo.waiting > 0">
-              <div class="px-3.5 py-1.5 rounded-full bg-amber-500/90 dark:bg-amber-600/90 text-white text-xs font-semibold shadow-lg backdrop-blur-md flex items-center gap-2 border border-amber-300/40">
+              <div class="px-3.5 py-1.5 rounded-full bg-amber-500/90 dark:bg-amber-600/90 text-white text-xs font-semibold shadow-sm flex items-center gap-2 border border-amber-300/40">
                 <Clock class="w-3.5 h-3.5 text-amber-100 animate-spin shrink-0" />
                 <span>排队中 (前方 {{ genStore.queueInfo.waiting }} 人)...</span>
               </div>
             </template>
             <template v-else-if="genStore.streamPreviewUrl">
-              <div class="px-3.5 py-1.5 rounded-full bg-blue-600/90 dark:bg-blue-500/90 text-white text-xs font-medium shadow-lg backdrop-blur-md flex items-center gap-2 border border-blue-300/40 animate-pulse">
+              <div class="px-3.5 py-1.5 rounded-full bg-blue-600/90 dark:bg-blue-500/90 text-white text-xs font-medium shadow-sm flex items-center gap-2 border border-blue-300/40 animate-pulse">
                 <Loader2 class="w-3.5 h-3.5 text-blue-100 animate-spin shrink-0" />
                 <span>正在流式去噪渲染...</span>
               </div>
             </template>
             <template v-else>
-              <div class="px-3.5 py-1.5 rounded-full bg-blue-600/90 dark:bg-blue-500/90 text-white text-xs font-medium shadow-lg backdrop-blur-md flex items-center gap-2 border border-blue-300/40 animate-pulse">
+              <div class="px-3.5 py-1.5 rounded-full bg-blue-600/90 dark:bg-blue-500/90 text-white text-xs font-medium shadow-sm flex items-center gap-2 border border-blue-300/40 animate-pulse">
                 <Loader2 class="w-3.5 h-3.5 text-blue-100 animate-spin shrink-0" />
                 <span>{{ genStore.batchTotal > 1 ? `AI 正在作画 (${genStore.batchCurrent}/${genStore.batchTotal})...` : 'AI 正在作画中...' }}</span>
               </div>
             </template>
           </div>
+        </div>
+
+        <div v-if="isMaskEditing" class="shrink-0 flex flex-wrap justify-center items-center gap-x-3 gap-y-1 border-t border-gray-200 dark:border-gray-800 px-2 py-1.5">
+          <div class="flex items-center gap-2 min-h-10">
+            <span class="text-xs text-gray-500 whitespace-nowrap font-medium">画笔大小:</span>
+            <input type="range" v-model.number="brushSize" min="5" max="150" class="w-24 sm:w-32 accent-blue-600" />
+            <span class="font-mono text-xs w-6 text-gray-600 dark:text-gray-300">{{ brushSize }}</span>
+          </div>
+          <button @click="resetMask" :disabled="!maskCanvasReady" class="min-h-10 px-2 text-xs text-gray-600 hover:text-red-500 font-medium transition whitespace-nowrap">重置</button>
+          <button @click="showMaskEditor = false; mobileTab = 'controls'" class="min-h-10 px-2 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 font-medium transition whitespace-nowrap">取消</button>
+          <button @click="saveMask" :disabled="!maskCanvasReady" class="min-h-10 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 sm:px-4 py-1.5 rounded-lg shadow-md shadow-blue-500/20 transition whitespace-nowrap">
+            保存重绘区域
+          </button>
+        </div>
+        <div v-else-if="!genStore.streamPreviewUrl && genStore.currentImage" role="group" aria-label="图片工具"
+          class="shrink-0 flex flex-wrap justify-center sm:justify-end items-center gap-1.5 border-t border-gray-200 dark:border-gray-800 px-2 py-1.5">
+          <button
+            @click="openInpaintEditor(genStore.currentImage?.url)"
+            :disabled="isOpeningMaskEditor"
+            class="bg-white hover:bg-blue-50 dark:bg-gray-900 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 border border-gray-200 dark:border-gray-700 min-w-11 min-h-11 flex items-center justify-center p-2 rounded-xl shadow-sm transition-colors active:scale-95"
+            title="局部重绘"
+          >
+            <Paintbrush class="w-4 h-4 sm:w-5 sm:h-5 text-blue-500" />
+          </button>
+          <button
+            @click="openUpscaleModal(genStore.currentImage)"
+            :disabled="isImageUpscaled(genStore.currentImage)"
+            class="border border-gray-200 dark:border-gray-700 min-w-11 min-h-11 flex items-center justify-center p-2 rounded-xl shadow-sm transition-colors active:scale-95"
+            :class="isImageUpscaled(genStore.currentImage) ? 'bg-gray-100/90 dark:bg-gray-800/90 text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-40' : 'bg-white hover:bg-amber-50 dark:bg-gray-900 dark:hover:bg-amber-950/40 text-gray-700 dark:text-gray-200 hover:text-amber-600 dark:hover:text-amber-400'"
+            :title="isImageUpscaled(genStore.currentImage) ? '该图已完成超分，不可再次放大' : '超分辨率放大此图 (消耗 1 点数)'"
+          >
+            <Sparkles class="w-4 h-4 sm:w-5 sm:h-5 text-amber-500" :class="{ 'grayscale opacity-50': isImageUpscaled(genStore.currentImage) }" />
+          </button>
+          <!-- 文件夹下拉操作菜单 (在飞牛宿主环境内展示，外部独立浏览器隐藏) -->
+          <div v-if="isInsideFnOS()" class="relative">
+            <button
+              type="button"
+              @click.stop="activeCanvasNasMenu = !activeCanvasNasMenu"
+              :aria-expanded="activeCanvasNasMenu"
+              :disabled="openingNasId === genStore.currentImage?.id"
+              class="bg-white hover:bg-blue-50 dark:bg-gray-900 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 min-w-11 min-h-11 flex items-center justify-center p-2 rounded-xl shadow-sm transition-colors active:scale-95 cursor-pointer disabled:opacity-50"
+              :class="activeCanvasNasMenu ? 'ring-2 ring-blue-500 text-blue-600 dark:text-blue-400' : ''"
+              title="在 NAS 打开文件 / 定位文件夹"
+            >
+              <Loader2 v-if="openingNasId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+              <FolderOpen v-else class="w-4 h-4 sm:w-5 sm:h-5" />
+            </button>
+
+            <!-- 图片工具栏中的 NAS 菜单向上展开 -->
+            <div
+              v-if="activeCanvasNasMenu"
+              @click.stop
+              class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-36 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 py-1 z-50 flex flex-col text-xs select-none whitespace-nowrap"
+            >
+              <button
+                type="button"
+                @click.stop="activeCanvasNasMenu = false; handleOpenFile(genStore.currentImage)"
+                class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
+              >
+                <FileImage class="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                <span>在NAS打开文件</span>
+              </button>
+              <button
+                type="button"
+                @click.stop="activeCanvasNasMenu = false; handleOpenFolder(genStore.currentImage)"
+                class="px-3 py-1.5 text-left text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-2 transition cursor-pointer"
+              >
+                <FolderSearch class="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                <span>定位文件夹</span>
+              </button>
+            </div>
+          </div>
+          <button @click="downloadImage" :disabled="openingMobileImageId !== null" class="bg-white hover:bg-blue-50 dark:bg-gray-900 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 min-w-11 min-h-11 flex items-center justify-center p-2 rounded-xl shadow-sm transition-colors active:scale-95 disabled:opacity-60" title="下载原图">
+            <Loader2 v-if="openingMobileImageId === genStore.currentImage?.id" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+            <Download v-else class="w-4 h-4 sm:w-5 sm:h-5" />
+          </button>
+          <button @click="copyImageToClipboard" class="bg-white hover:bg-blue-50 dark:bg-gray-900 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 min-w-11 min-h-11 flex items-center justify-center p-2 rounded-xl shadow-sm transition-colors active:scale-95" title="复制图像到剪贴板">
+            <Check v-if="imageCopied" class="w-4 h-4 sm:w-5 sm:h-5 text-green-500" />
+            <Copy v-else class="w-4 h-4 sm:w-5 sm:h-5" />
+          </button>
+          <button @click="handleUseParams" class="bg-white hover:bg-blue-50 dark:bg-gray-900 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 min-w-11 min-h-11 flex items-center justify-center p-2 rounded-xl shadow-sm transition-colors active:scale-95" title="复用此图全部参数">
+            <Check v-if="paramsCopied" class="w-4 h-4 sm:w-5 sm:h-5 text-green-500" />
+            <SlidersHorizontal v-else class="w-4 h-4 sm:w-5 sm:h-5" />
+          </button>
         </div>
       </section>
 
@@ -2605,7 +2551,7 @@ watch(
           w-[85vw] max-w-xs lg:max-w-none lg:w-60 flex-shrink-0 bg-white dark:bg-gray-900 
           border-l lg:border lg:border-gray-200 dark:border-gray-800 lg:rounded-2xl 
           p-3.5 flex flex-col gap-3 shadow-2xl lg:shadow-none
-          transition-transform duration-300 ease-in-out h-full
+          transition-transform lg:transition-none duration-300 ease-in-out h-full
           fixed inset-y-0 right-0 z-40 lg:static lg:transform-none lg:translate-x-0 pb-24 lg:pb-3.5
         "
         :class="mobileTab === 'history' ? 'translate-x-0' : 'translate-x-full'"

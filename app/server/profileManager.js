@@ -40,11 +40,6 @@ function getProfileDbPath(profileName) {
   return path.join(profileDir, 'profile.db');
 }
 
-function testProfileWriteAccess(profileName) {
-  const sanitized = sanitizeProfileName(profileName) || 'Default';
-  return profileDb.testWriteAccess(path.join(getStoragePath(), 'profiles', sanitized));
-}
-
 function getProfileDataFile(profileName) {
   const profileDir = getProfileDir(profileName);
   return path.join(profileDir, 'data.json');
@@ -73,10 +68,11 @@ function listProfiles() {
     profiles.unshift('Default');
   }
 
-  // Ensure all existing profiles are initialized / silently migrated if data.json exists
+  // Preserve legacy imports without opening every SQLite database when listing profiles.
   for (const p of profiles) {
+    const pDir = path.join(profilesDir, p);
+    if (!fs.existsSync(path.join(pDir, 'data.json'))) continue;
     try {
-      const pDir = path.join(profilesDir, p);
       profileDb.getDb(pDir, p);
     } catch (err) {
       console.warn(`[ProfileManager] Warning initializing DB for profile "${p}":`, err.message);
@@ -792,7 +788,6 @@ module.exports = {
   getProfilesDir,
   getProfileDir,
   getProfileDbPath,
-  testProfileWriteAccess,
   getProfileDataFile,
   getInitialData,
   listProfiles,

@@ -28,6 +28,17 @@ describe('SQLite Profile Storage & Silent Migration Tests', () => {
     } catch {}
   });
 
+  test('listing inactive profiles does not initialize their databases', () => {
+    const profile = 'InactiveArchive';
+    const dir = profileManager.getProfileDir(profile);
+    const dbPath = path.join(dir, 'profile.db');
+    assert.ok(profileManager.listProfiles().profiles.includes(profile));
+    assert.equal(fs.existsSync(dbPath), false);
+
+    profileManager.getProfileData(profile);
+    assert.equal(fs.existsSync(dbPath), true);
+  });
+
   test('reads old history when SQLite cannot open the database for writing', (t) => {
     if (process.getuid?.() === 0) return t.skip('Requires an unprivileged process');
     const profile = 'ReadOnly';
