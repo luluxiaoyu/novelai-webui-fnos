@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, reactive, watch } from 'vue';
 import { encryptedAxios, encryptedFetchStream, resolveApiUrl } from '../utils/api';
 import { isAxiosError } from 'axios';
+import { prepareBaseImage, type BaseImage } from '../utils/baseImage';
 import JSZip from 'jszip';
 import { useAuthStore } from './auth';
 import { useProfileStore } from './profile';
@@ -560,58 +561,31 @@ export const useGenerationStore = defineStore('generation', () => {
     params.transparent_bg = false;
   };
 
-  const sendToInpaint = async (imgUrl: string, preserveMask = false) => {
-    let base64 = imgUrl;
-    if (base64.includes('base64,')) {
-      base64 = base64.split('base64,')[1];
-    } else if (base64.startsWith('http://') || base64.startsWith('https://') || base64.startsWith('/')) {
-      try {
-        const fullUrl = resolveApiUrl(base64);
-        const res = await fetch(fullUrl);
-        const blob = await res.blob();
-        base64 = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const result = (reader.result as string) || '';
-            resolve(result.includes('base64,') ? result.split('base64,')[1] : result);
-          };
-          reader.readAsDataURL(blob);
-        });
-      } catch (err) {
-        console.warn('[GenStore] Failed to fetch image as base64 for inpaint:', err);
-      }
-    }
-    params.image = base64;
-    if (!preserveMask) {
-      params.mask = undefined;
-    }
+  const imageMode = ref<'img2img' | 'inpaint'>('img2img');
+  const inpaintStrength = ref(1);
 
-    // 同步检测图片真实尺寸并对齐至 64 整数倍，保证生图参数与涂鸦遮罩基准一致
-    if (base64) {
-      try {
-        const img = new Image();
-        const src = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`;
-        await new Promise<void>((resolve) => {
-          img.onload = () => {
-            const nw = img.naturalWidth || img.width;
-            const nh = img.naturalHeight || img.height;
-            if (nw > 0 && nh > 0) {
-              params.width = Math.max(64, Math.round(nw / 64) * 64);
-              params.height = Math.max(64, Math.round(nh / 64) * 64);
-            }
-            resolve();
-          };
-          img.onerror = () => resolve();
-          img.src = src;
-        });
-      } catch (e) {}
-    }
+  const setBaseImage = (image: BaseImage, mode: 'img2img' | 'inpaint') => {
+    params.image = image.dataUrl;
+    params.mask = undefined;
+    params.width = image.width;
+    params.height = image.height;
+    imageMode.value = mode;
+  };
+
+  const sendToInpaint = async (url: string) => {
+    const source = /^(https?:|blob:|data:|\/)/.test(url) ? url : `data:image/png;base64,${url}`;
+    setBaseImage(await prepareBaseImage(resolveApiUrl(source)), 'inpaint');
   };
 
   const useParams = (p: GenerationParams | GeneratedImage | any, keepSeed = false) => {
     const targetParams = p?.params ? p.params : p;
     if (!targetParams) return;
-    Object.assign(params, targetParams);
+    const { image: _image, mask: _mask, width, height, ...settings } = targetParams;
+    Object.assign(params, settings);
+    if (!params.image) {
+      if (width !== undefined) params.width = width;
+      if (height !== undefined) params.height = height;
+    }
     if (!keepSeed) {
       params.seed = -1; // 默认还原为随机种子(-1)，防止复用参数时误锁死固定种子
     }
@@ -639,6 +613,11 @@ export const useGenerationStore = defineStore('generation', () => {
     if (loadProfilePromise) {
       await loadProfilePromise;
     }
+    if (params.image && imageMode.value === 'inpaint' && !params.mask) {
+      error.value = '请先绘制并保存要重绘的区域';
+      return;
+    }
+
     error.value = '';
     isGenerating.value = true;
     startQueuePolling();
@@ -665,12 +644,7 @@ export const useGenerationStore = defineStore('generation', () => {
     const isV4OrV5 = params.model.includes('-4') || params.model.includes('-5') || params.model.includes('v4') || params.model.includes('v5');
     const isV5 = params.model.includes('diffusion-5') || params.model.includes('v5');
 
-    let action: 'generate' | 'img2img' | 'infill' = 'generate';
-    if (params.mask && params.image) {
-      action = 'infill';
-    } else if (params.image) {
-      action = 'img2img';
-    }
+    const action = params.image ? (imageMode.value === 'inpaint' ? 'infill' : 'img2img') : 'generate';
 
     let modelToUse = params.model;
     if (action === 'infill') {
@@ -695,20 +669,12 @@ export const useGenerationStore = defineStore('generation', () => {
     };
 
     if (params.image) {
-      let rawImage = params.image;
-      if (rawImage.includes('base64,')) {
-        rawImage = rawImage.split('base64,')[1];
-      }
-      parameters.image = rawImage;
-      parameters.strength = params.strength ?? 0.7;
-      parameters.noise = params.noise ?? 0.0;
+      parameters.image = params.image.replace(/^data:[^,]+,/, '');
+      parameters.strength = action === 'infill' ? (isV4OrV5 ? inpaintStrength.value : 1) : (params.strength ?? 0.7);
+      parameters.noise = action === 'img2img' ? (params.noise ?? 0) : 0;
       parameters.extra_noise_seed = seedToUse;
-      if (params.mask) {
-        let rawMask = params.mask;
-        if (rawMask.includes('base64,')) {
-          rawMask = rawMask.split('base64,')[1];
-        }
-        parameters.mask = rawMask;
+      if (action === 'infill' && params.mask) {
+        parameters.mask = params.mask.replace(/^data:[^,]+,/, '');
       }
     }
 
@@ -870,6 +836,7 @@ export const useGenerationStore = defineStore('generation', () => {
 
           if (!response.ok) {
             let errMsg = '流式生成失败';
+            if (response.status === 413) throw new Error('上传的图片请求过大，请换用更小的底图');
             try {
               const errData = await response.json();
               errMsg = errData.message || errData.error || (typeof errData === 'object' ? JSON.stringify(errData) : String(errData));
@@ -1173,6 +1140,9 @@ export const useGenerationStore = defineStore('generation', () => {
         } catch {}
       }
 
+      if (e.response?.status === 413) {
+        rawMsg = '上传的图片请求过大，请换用更小的底图';
+      }
       error.value = rawMsg || '生成失败，请检查设置或服务状态';
       throw e;
     }
@@ -1301,6 +1271,9 @@ export const useGenerationStore = defineStore('generation', () => {
     useParams,
     usePrompt,
     sendToInpaint,
+    setBaseImage,
+    imageMode,
+    inpaintStrength,
     isUpscaling,
     upscaleImage,
     deletePromptHistory,
