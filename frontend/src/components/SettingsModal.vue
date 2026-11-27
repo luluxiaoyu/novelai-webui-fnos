@@ -334,7 +334,7 @@ const handleTestManualPath = async () => {
     const res = await encryptedAxios({ method: 'POST', url: '/api/storage/validate-path', data: { path: target } });
     if (request !== validationRequest) return;
     pathValidationResult.value = res.data?.success
-      ? { success: true, message: '目录读写检查通过，当前存储位置未改变' }
+      ? { success: true, message: res.data.message || '目录读写检查通过' }
       : { success: false, error: res.data?.error || '目录不可写' };
   } catch (err: any) {
     if (request === validationRequest) pathValidationResult.value = { success: false, error: err.response?.data?.error || err.message };
@@ -958,8 +958,8 @@ const handleDeleteProfile = async (name: string) => {
                 <span v-if="isStoragePathChanged" class="text-xs text-blue-600 dark:text-blue-400">候选目录尚未应用</span>
               </div>
             </fieldset>
-            <p v-if="pathValidationResult" role="status" class="text-xs" :class="pathValidationResult.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'">
-              {{ pathValidationResult.message || pathValidationResult.error }}
+            <p role="status" class="text-xs" :class="pathValidationResult?.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'">
+              {{ pathValidationResult?.message || pathValidationResult?.error }}
             </p>
             <p v-if="appSettingActionFeedback" role="status" class="text-xs" :class="appSettingActionFeedback.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'">
               {{ appSettingActionFeedback.message }}

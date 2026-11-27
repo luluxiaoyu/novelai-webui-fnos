@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, reactive, watch } from 'vue';
+import { computed, ref, reactive, watch } from 'vue';
 import { encryptedAxios, encryptedFetchStream, resolveApiUrl } from '../utils/api';
 import { isAxiosError } from 'axios';
 import { prepareBaseImage, type BaseImage } from '../utils/baseImage';
@@ -613,12 +613,15 @@ export const useGenerationStore = defineStore('generation', () => {
 
   const imageMode = ref<'img2img' | 'inpaint'>('img2img');
   const inpaintStrength = ref(1);
+  const baseImageSize = ref<Pick<BaseImage, 'width' | 'height'>>();
+  const generationSize = computed(() => (
+    params.image && baseImageSize.value ? baseImageSize.value : { width: params.width, height: params.height }
+  ));
 
   const setBaseImage = (image: BaseImage, mode: 'img2img' | 'inpaint') => {
+    baseImageSize.value = { width: image.width, height: image.height };
     params.image = image.dataUrl;
     params.mask = undefined;
-    params.width = image.width;
-    params.height = image.height;
     imageMode.value = mode;
   };
 
@@ -698,7 +701,8 @@ export const useGenerationStore = defineStore('generation', () => {
   const generateSingle = async () => {
     const seedToUse = params.seed === -1 ? Math.floor(Math.random() * 4294967295) : params.seed;
     const { image: _source, mask: _mask, ...settings } = params;
-    const generatedParams = JSON.parse(JSON.stringify({ ...settings, seed: seedToUse }));
+    const { width, height } = generationSize.value;
+    const generatedParams = JSON.parse(JSON.stringify({ ...settings, width, height, seed: seedToUse }));
     const isV4OrV5 = params.model.includes('-4') || params.model.includes('-5') || params.model.includes('v4') || params.model.includes('v5');
     const isV5 = params.model.includes('diffusion-5') || params.model.includes('v5');
 
@@ -712,8 +716,8 @@ export const useGenerationStore = defineStore('generation', () => {
     }
 
     let parameters: any = {
-      width: params.width,
-      height: params.height,
+      width,
+      height,
       steps: params.steps,
       sampler: params.sampler,
       scale: params.scale,
@@ -1330,6 +1334,7 @@ export const useGenerationStore = defineStore('generation', () => {
     usePrompt,
     sendToInpaint,
     setBaseImage,
+    generationSize,
     imageMode,
     inpaintStrength,
     isUpscaling,

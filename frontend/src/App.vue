@@ -468,16 +468,26 @@ const batchOptions = [
 // 计算是否消耗点数及消耗提示
 import { calculateBaseAnlasCost } from './utils/anlasCalculator';
 
+const generationWidth = computed({
+  get: () => genStore.generationSize.width,
+  set: (width: number) => { genStore.params.width = width; }
+});
+const generationHeight = computed({
+  get: () => genStore.generationSize.height,
+  set: (height: number) => { genStore.params.height = height; }
+});
+
 const costInfo = computed(() => {
   const isOpus = authStore.subscriptionTier === 3;
-  const pixels = genStore.params.width * genStore.params.height;
+  const { width, height } = genStore.generationSize;
+  const pixels = width * height;
   const isNormalSize = pixels <= 1048576; // <= 1024x1024 (或 832x1216 等标准分辨率)
   const isNormalSteps = genStore.params.steps <= 28;
   const isV5 = genStore.params.model.startsWith('nai-diffusion-5');
 
   const anlasCost = calculateBaseAnlasCost(
-    genStore.params.width,
-    genStore.params.height,
+    width,
+    height,
     genStore.params.steps,
     genStore.params.sm,
     genStore.params.sm_dyn,
@@ -862,7 +872,7 @@ const applyDropAction = async (action: 'inpaint' | 'img2img' | 'metadata') => {
   genStore.currentImage = {
     id: 'uploaded-' + timestamp,
     url: image.dataUrl,
-    params: { ...genStore.params, image: undefined, mask: undefined },
+    params: { ...genStore.params, ...genStore.generationSize, image: undefined, mask: undefined },
     timestamp
   };
   showDropActionModal.value = false;
@@ -2045,9 +2055,9 @@ watch(
               <span v-if="costInfo.isFree" class="text-[10px] bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-1.5 py-0.5 rounded border border-green-200 dark:border-green-800 transition-colors">免费区间</span>
             </div>
             <div class="flex gap-2">
-              <input type="number" v-model.number="genStore.params.width" :disabled="Boolean(genStore.params.image)" class="w-1/2 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-lg p-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 text-center transition-colors" placeholder="宽" />
+              <input type="number" v-model.number="generationWidth" :disabled="Boolean(genStore.params.image)" class="w-1/2 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-lg p-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 text-center transition-colors" placeholder="宽" />
               <span class="text-gray-400 dark:text-gray-500 self-center text-xs">×</span>
-              <input type="number" v-model.number="genStore.params.height" :disabled="Boolean(genStore.params.image)" class="w-1/2 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-lg p-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 text-center transition-colors" placeholder="高" />
+              <input type="number" v-model.number="generationHeight" :disabled="Boolean(genStore.params.image)" class="w-1/2 bg-gray-50 dark:bg-gray-950 border border-gray-300 dark:border-gray-700 rounded-lg p-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 text-center transition-colors" placeholder="高" />
             </div>
             <p v-if="genStore.params.image" class="mt-1 text-xs text-gray-500">图生图和局部重绘使用底图尺寸</p>
             <div v-else class="flex gap-2 mt-1.5">
@@ -2270,7 +2280,7 @@ watch(
 
             <div v-if="genStore.params.image" class="flex flex-col gap-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 p-3">
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <span class="font-medium">底图 · {{ genStore.params.width }} × {{ genStore.params.height }}</span>
+                <span class="font-medium">底图 · {{ generationWidth }} × {{ generationHeight }}</span>
                 <button type="button" @click="clearInpaint" class="text-red-500 hover:underline">移除底图</button>
               </div>
               <fieldset class="grid grid-cols-2 gap-2">

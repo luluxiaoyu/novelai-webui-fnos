@@ -235,6 +235,46 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
     assert.equal(unauthorizedRes.data.success, false);
   });
 
+  test('validating the current storage checks SQLite without changing the active profile or its data', async () => {
+    const previous = configManager.getConfig();
+    const root = configManager.DATA_DIR;
+    const profile = 'StoragePermissionTest';
+    const profileDir = path.join(root, 'profiles', profile);
+    const dbPath = path.join(profileDir, 'profile.db');
+    const validate = () => invoke('POST', '/storage/validate-path', { path: root });
+
+    configManager.updateConfig({ storagePath: root, activeProfile: profile });
+    try {
+      const missing = await validate();
+      assert.match(missing.data.message, /尚无数据库/);
+      assert.equal(fs.existsSync(profileDir), false);
+
+      const db = profileDb.getDb(profileDir, profile);
+      profileDb.saveSetting(db, 'params', { width: 1024 });
+      const writable = await validate();
+      assert.equal(writable.data.success, true);
+      assert.match(writable.data.message, /StoragePermissionTest.*通过/);
+      assert.equal(profileDb.getSettings(db).params, '{"width":1024}');
+      assert.equal(profileDb.getSettings(db)._storage_write_probe, undefined);
+      profileDb.closeDb(profileDir);
+
+      if (process.getuid?.() !== 0) {
+        fs.chmodSync(dbPath, 0o444);
+        assert.equal(storageManager.testPathWritable(root).writable, true);
+        const readOnly = await validate();
+        assert.equal(readOnly.data.success, false);
+        assert.match(readOnly.data.error, /目录可写，存档「StoragePermissionTest」写入检查失败/);
+      }
+      assert.equal(configManager.getConfig().storagePath, root);
+      assert.equal(configManager.getConfig().activeProfile, profile);
+    } finally {
+      profileDb.closeDb(profileDir);
+      if (fs.existsSync(dbPath)) fs.chmodSync(dbPath, 0o644);
+      fs.rmSync(profileDir, { recursive: true, force: true });
+      configManager.updateConfig({ storagePath: previous.storagePath, activeProfile: previous.activeProfile });
+    }
+  });
+
   test('8. POST /storage/switch switches active path and updates config', async () => {
     const newStorage = path.join(configManager.DATA_DIR, 'api_switch_target');
     fs.mkdirSync(newStorage, { recursive: true });

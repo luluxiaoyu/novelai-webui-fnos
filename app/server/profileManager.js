@@ -40,6 +40,11 @@ function getProfileDbPath(profileName) {
   return path.join(profileDir, 'profile.db');
 }
 
+function testProfileWriteAccess(profileName) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  return profileDb.testWriteAccess(path.join(getStoragePath(), 'profiles', sanitized));
+}
+
 function getProfileDataFile(profileName) {
   const profileDir = getProfileDir(profileName);
   return path.join(profileDir, 'data.json');
@@ -787,6 +792,7 @@ module.exports = {
   getProfilesDir,
   getProfileDir,
   getProfileDbPath,
+  testProfileWriteAccess,
   getProfileDataFile,
   getInitialData,
   listProfiles,

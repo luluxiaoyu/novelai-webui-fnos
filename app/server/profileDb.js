@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
+const { pathToFileURL } = require('node:url');
 
 // Cache open database connections per profile directory
 const dbCache = new Map();
@@ -474,6 +475,28 @@ function withReadableDb(profileDir, profileName, read) {
       db.close();
     }
   }
+}
+
+function testWriteAccess(profileDir) {
+  const dir = path.resolve(profileDir);
+  const dbPath = path.join(dir, 'profile.db');
+  if (!fs.statSync(dbPath, { throwIfNoEntry: false })) return false;
+
+  const cached = dbCache.get(dir);
+  const dbUrl = pathToFileURL(dbPath);
+  dbUrl.searchParams.set('mode', 'rw');
+  const db = cached || new DatabaseSync(dbUrl.href);
+  try {
+    db.exec('BEGIN IMMEDIATE;');
+    try {
+      saveSetting(db, '_storage_write_probe', '');
+    } finally {
+      db.exec('ROLLBACK;');
+    }
+  } finally {
+    if (!cached) db.close();
+  }
+  return true;
 }
 
 /**
@@ -1100,6 +1123,7 @@ module.exports = {
   initDbSchema,
   getDb,
   withReadableDb,
+  testWriteAccess,
   closeDb,
   closeAllDbs,
   migrateProfileIfNeeded,

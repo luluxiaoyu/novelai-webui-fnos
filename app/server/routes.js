@@ -185,12 +185,34 @@ router.post('/storage/validate-path', async (req, res) => {
     const target = await storageManager.assertStorageAccess(req, targetPath);
     const result = storageManager.validatePath(target, false);
     if (result.writable) {
+      let message = '目录读写检查通过';
+      const cfg = getConfig();
+      let currentPath = path.resolve(cfg.storagePath);
+      // An inaccessible current directory should not block testing another candidate.
+      try { currentPath = storageManager.canonicalPath(currentPath); } catch {}
+      if (target === currentPath) {
+        const profile = cfg.activeProfile || 'Default';
+        try {
+          message = profileManager.testProfileWriteAccess(profile)
+            ? `目录和当前存档「${profile}」读写检查通过`
+            : `目录读写检查通过，当前存档「${profile}」尚无数据库可检查`;
+        } catch (error) {
+          console.error(`[ProfileStorage] 检查存档「${profile}」写入权限失败:`, error.errcode ?? error.code, error.message);
+          return res.json({
+            success: false,
+            path: targetPath.trim(),
+            exists: true,
+            writable: false,
+            error: `目录可写，存档「${profile}」写入检查失败。${profileStorageErrorMessage(error)}`
+          });
+        }
+      }
       return res.json({
         success: true,
         path: targetPath.trim(),
         exists: result.exists,
         writable: true,
-        message: '路径有效且具有读写权限'
+        message
       });
     } else {
       return res.json({
@@ -390,8 +412,7 @@ router.delete('/profiles/:name', (req, res) => {
   }
 });
 
-function sendProfileStorageError(res, operation, error) {
-  console.error(`[ProfileStorage] ${operation}失败:`, error.message);
+function profileStorageErrorMessage(error) {
   const sqliteCode = error.code === 'ERR_SQLITE_ERROR' ? (error.errcode & 0xff) : null;
   let message = error.message;
   if (['EACCES', 'EPERM', 'EROFS'].includes(error.code) || sqliteCode === 8) {
@@ -401,7 +422,12 @@ function sendProfileStorageError(res, operation, error) {
   } else if (error.code === 'ENOSPC' || sqliteCode === 13) {
     message = '当前存储空间不足，请释放空间后重试';
   }
-  return res.status(error.statusCode || 500).json({ success: false, error: message });
+  return message;
+}
+
+function sendProfileStorageError(res, operation, error) {
+  console.error(`[ProfileStorage] ${operation}失败:`, error.errcode ?? error.code, error.message);
+  return res.status(error.statusCode || 500).json({ success: false, error: profileStorageErrorMessage(error) });
 }
 
 router.get('/profiles/data', (req, res) => {
