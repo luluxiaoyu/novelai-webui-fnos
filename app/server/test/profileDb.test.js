@@ -42,10 +42,10 @@ describe('SQLite Profile Storage & Silent Migration Tests', () => {
     rawDb.close();
     fs.chmodSync(dbPath, 0o444);
 
-    assert.throws(() => profileDb.getDb(dir, profile), /readonly database/);
+    assert.throws(() => profileDb.getDb(dir, profile), { code: 'EACCES' });
     assert.equal(profileManager.getHistory(profile).history[0].id, 'old-image');
     assert.equal(profileManager.getProfileData(profile).params.prompt, 'Saved prompt');
-    assert.throws(() => profileManager.saveProfileData(profile, { params: { prompt: 'New prompt' } }), /readonly database/);
+    assert.throws(() => profileManager.saveProfileData(profile, { params: { prompt: 'New prompt' } }), { code: 'EACCES' });
 
     const unindexedId = '1700000000000-lost';
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');

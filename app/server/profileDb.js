@@ -437,6 +437,11 @@ function getDb(profileDir, profileName = 'Default') {
     }
 
     const dbPath = path.join(normalizedDir, 'profile.db');
+    // SQLite may silently fall back to read-only when opening an existing file.
+    // Keep such connections out of the write cache.
+    if (fs.statSync(dbPath, { throwIfNoEntry: false })) {
+      fs.accessSync(dbPath, fs.constants.R_OK | fs.constants.W_OK);
+    }
     db = new DatabaseSync(dbPath);
 
     try {
@@ -480,23 +485,81 @@ function withReadableDb(profileDir, profileName, read) {
 function testWriteAccess(profileDir) {
   const dir = path.resolve(profileDir);
   const dbPath = path.join(dir, 'profile.db');
-  if (!fs.statSync(dbPath, { throwIfNoEntry: false })) return false;
-
-  const cached = dbCache.get(dir);
-  const dbUrl = pathToFileURL(dbPath);
-  dbUrl.searchParams.set('mode', 'rw');
-  const db = cached || new DatabaseSync(dbUrl.href);
   try {
-    db.exec('BEGIN IMMEDIATE;');
-    try {
-      saveSetting(db, '_storage_write_probe', '');
-    } finally {
-      db.exec('ROLLBACK;');
+    if (!fs.statSync(dbPath, { throwIfNoEntry: false })) return false;
+    const readWrite = fs.constants.R_OK | fs.constants.W_OK;
+    fs.accessSync(dir, readWrite | fs.constants.X_OK);
+    fs.accessSync(dbPath, readWrite);
+    // Opening a read-only database can create WAL files with the same read-only mode.
+    for (const suffix of ['-wal', '-shm']) {
+      try {
+        fs.accessSync(dbPath + suffix, readWrite);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
     }
-  } finally {
-    if (!cached) db.close();
+    const cached = dbCache.get(dir);
+    if (cached) {
+      try {
+        probeWrite(cached);
+        return true;
+      } catch (error) {
+        if (!isDbAccessError(error)) throw error;
+        // A connection opened before a grant changed keeps its original access mode.
+        closeDb(dir);
+      }
+    }
+
+    const dbUrl = pathToFileURL(dbPath);
+    dbUrl.searchParams.set('mode', 'rw');
+    const db = new DatabaseSync(dbUrl.href);
+    try {
+      probeWrite(db);
+    } finally {
+      db.close();
+    }
+    return true;
+  } catch (error) {
+    if (isDbAccessError(error)) error.storageDetail = describeWriteAccessError(dir, error);
+    throw error;
   }
-  return true;
+}
+
+function probeWrite(db) {
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    saveSetting(db, '_storage_write_probe', '');
+  } finally {
+    db.exec('ROLLBACK;');
+  }
+}
+
+function describeWriteAccessError(dir, error) {
+  const readWrite = fs.constants.R_OK | fs.constants.W_OK;
+  const targets = [
+    { label: '存档子目录', filePath: dir, mode: readWrite | fs.constants.X_OK },
+    ...['profile.db', 'profile.db-wal', 'profile.db-shm'].map(label => ({
+      label, filePath: path.join(dir, label), mode: readWrite
+    }))
+  ];
+  const denied = [];
+  for (const { label, filePath, mode } of targets) {
+    try {
+      fs.accessSync(filePath, mode);
+    } catch (accessError) {
+      if (['EACCES', 'EPERM', 'EROFS'].includes(accessError.code)) {
+        denied.push(`${label}（${accessError.code}）`);
+      }
+    }
+  }
+  if (denied.length) return `应用账号对以下项目缺少读写权限：${denied.join('、')}`;
+
+  switch (error.errcode) {
+    case 520: return 'SQLite 无法锁定共享内存文件 profile.db-shm（520）';
+    case 1032: return '数据库文件在打开后被移动或替换（1032）';
+    case 1544: return 'SQLite 无法在存档子目录创建日志文件（1544）';
+    default: return `系统权限检查未发现拒绝访问的文件，SQLite 仍无法写入（${error.errcode ?? error.code}）`;
+  }
 }
 
 /**
@@ -519,12 +582,7 @@ function closeDb(profileDir) {
  * Close all cached DB connections
  */
 function closeAllDbs() {
-  for (const [dir, db] of dbCache.entries()) {
-    try {
-      db.close();
-    } catch {}
-  }
-  dbCache.clear();
+  for (const dir of dbCache.keys()) closeDb(dir);
 }
 
 // Automatically close DB connections on process exit

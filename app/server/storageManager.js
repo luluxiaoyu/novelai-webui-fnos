@@ -4,6 +4,22 @@ const { DatabaseSync } = require('node:sqlite');
 const { getConfig, updateConfig, DATA_DIR } = require('./configManager');
 const { closeAllDbs, initDbSchema } = require('./profileDb');
 const { isFnosRuntime, assertStorageAdmin, callFnosApi, checkUserPaths } = require('./fnosApi');
+const mergeConnections = new Set();
+
+function closeMergeDatabase(db) {
+  if (!db) return;
+  try {
+    db.close();
+  } catch (error) {
+    console.warn('[StorageManager] Error closing merge database:', error.message);
+  } finally {
+    mergeConnections.delete(db);
+  }
+}
+
+function closeMergeDatabases() {
+  for (const db of mergeConnections) closeMergeDatabase(db);
+}
 
 /**
  * Test whether a path exists, is a directory, and is writable.
@@ -496,7 +512,9 @@ async function mergeStorageData(sourceDir, targetDir, onProgress = () => {}, swi
 
     try {
       sourceDb = new DatabaseSync(p.dbPath, { readOnly: true });
+      mergeConnections.add(sourceDb);
       targetDb = new DatabaseSync(targetDbPath);
+      mergeConnections.add(targetDb);
       initDbSchema(targetDb);
 
       targetDb.exec('BEGIN TRANSACTION');
@@ -665,12 +683,8 @@ async function mergeStorageData(sourceDir, targetDir, onProgress = () => {}, swi
       }
       throw dbErr;
     } finally {
-      if (sourceDb) {
-        try { sourceDb.close(); } catch {}
-      }
-      if (targetDb) {
-        try { targetDb.close(); } catch {}
-      }
+      closeMergeDatabase(sourceDb);
+      closeMergeDatabase(targetDb);
     }
 
     await new Promise(r => setImmediate(r));
@@ -819,6 +833,7 @@ module.exports = {
   scanFilesToCopy,
   scanProfileDbs,
   mergeStorageData,
+  closeMergeDatabases,
   startMergeJob,
   getMergeJobStatus
 };

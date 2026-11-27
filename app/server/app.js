@@ -7,6 +7,8 @@ const fs = require('fs');
 const { encryptionMiddleware } = require('./encryption');
 const apiRoutes = require('./routes');
 const { getConfig } = require('./configManager');
+const { closeAllDbs } = require('./profileDb');
+const { closeMergeDatabases } = require('./storageManager');
 
 const app = express();
 
@@ -137,8 +139,12 @@ if (SOCKET_PATH) {
 function shutdown() {
   console.log('[Server] Shutting down service...');
   if (httpServer) httpServer.close();
+  if (socketServer) socketServer.close();
+
+  // Let SQLite checkpoint WAL data when the last connection closes.
+  closeMergeDatabases();
+  closeAllDbs();
   if (socketServer) {
-    socketServer.close();
     try {
       if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
     } catch (e) {}

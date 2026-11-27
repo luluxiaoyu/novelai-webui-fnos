@@ -197,13 +197,13 @@ router.post('/storage/validate-path', async (req, res) => {
             ? `目录和当前存档「${profile}」读写检查通过`
             : `目录读写检查通过，当前存档「${profile}」尚无数据库可检查`;
         } catch (error) {
-          console.error(`[ProfileStorage] 检查存档「${profile}」写入权限失败:`, error.errcode ?? error.code, error.message);
+          console.error(`[ProfileStorage] 检查存档「${profile}」写入权限失败:`, error.errcode ?? error.code, error.message, error.storageDetail || '');
           return res.json({
             success: false,
             path: targetPath.trim(),
             exists: true,
             writable: false,
-            error: `目录可写，存档「${profile}」写入检查失败。${profileStorageErrorMessage(error)}`
+            error: `目录可写，存档「${profile}」写入检查失败。${error.storageDetail || profileStorageErrorMessage(error)}`
           });
         }
       }
@@ -416,7 +416,9 @@ function profileStorageErrorMessage(error) {
   const sqliteCode = error.code === 'ERR_SQLITE_ERROR' ? (error.errcode & 0xff) : null;
   let message = error.message;
   if (['EACCES', 'EPERM', 'EROFS'].includes(error.code) || sqliteCode === 8) {
-    message = '当前存档不可写或无访问权限，请检查飞牛应用的目录授权和存档文件权限';
+    message = error.syscall === 'access' && error.path && path.basename(error.path) === 'profile.db'
+      ? `应用账号无法读写当前存档的 profile.db（${error.code}）`
+      : '当前存档不可写或无访问权限，请测试当前存档的写入权限';
   } else if (error.code === 'ENOENT' || sqliteCode === 14) {
     message = '无法打开当前存储目录或存档数据库，请检查原存储空间是否已挂载并可读写';
   } else if (error.code === 'ENOSPC' || sqliteCode === 13) {

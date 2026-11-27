@@ -264,6 +264,25 @@ describe('Storage API Express HTTP Endpoints Tests', () => {
         const readOnly = await validate();
         assert.equal(readOnly.data.success, false);
         assert.match(readOnly.data.error, /目录可写，存档「StoragePermissionTest」写入检查失败/);
+        assert.match(readOnly.data.error, /profile\.db（EACCES）/);
+        assert.equal(fs.existsSync(`${dbPath}-wal`), false);
+        assert.equal(fs.existsSync(`${dbPath}-shm`), false);
+
+        fs.chmodSync(dbPath, 0o644);
+        const restored = await validate();
+        assert.equal(restored.data.success, true);
+        assert.equal(profileDb.getSettings(profileDb.getDb(profileDir, profile)).params, '{"width":1024}');
+
+        const shmPath = `${dbPath}-shm`;
+        fs.chmodSync(shmPath, 0o444);
+        try {
+          const sidecarDenied = await validate();
+          assert.equal(sidecarDenied.data.success, false);
+          assert.match(sidecarDenied.data.error, /profile\.db-shm（EACCES）/);
+        } finally {
+          fs.chmodSync(shmPath, 0o644);
+        }
+        assert.equal((await validate()).data.success, true);
       }
       assert.equal(configManager.getConfig().storagePath, root);
       assert.equal(configManager.getConfig().activeProfile, profile);

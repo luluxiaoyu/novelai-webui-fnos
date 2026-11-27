@@ -33,14 +33,47 @@ mkdir -p "${TRIM_PKGVAR}/logs"
 PID_FILE="${TRIM_PKGVAR}/server.pid"
 LOG_FILE="${TRIM_PKGVAR}/logs/server.log"
 SOCKET_FILE="${TRIM_APPDEST}/app.sock"
+SERVER_JS="${TRIM_APPDEST}/server/app.js"
+if [ ! -f "$SERVER_JS" ] && [ -f "${TRIM_APPDEST}/app/server/app.js" ]; then
+    SERVER_JS="${TRIM_APPDEST}/app/server/app.js"
+fi
+
+is_server_running() {
+    local pid="$1" state command
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    read -r state command < <(ps -ww -p "$pid" -o stat= -o args=) || return 1
+    [[ "$state" != Z* ]] || return 1
+    case "$command" in
+        *" ${TRIM_APPDEST}/server/app.js") command=${command%" ${TRIM_APPDEST}/server/app.js"} ;;
+        *" ${TRIM_APPDEST}/app/server/app.js") command=${command%" ${TRIM_APPDEST}/app/server/app.js"} ;;
+        *) return 1 ;;
+    esac
+    [ "${command##*/}" = node ]
+}
+
+find_server_pid() {
+    local pid
+    if [ -f "$PID_FILE" ] && read -r pid < "$PID_FILE" && is_server_running "$pid"; then
+        printf '%s\n' "$pid"
+        return 0
+    fi
+    # Recover the service PID if an earlier stop removed its PID file prematurely.
+    for pid in $(pgrep -f 'server/app\.js$' 2>/dev/null); do
+        if is_server_running "$pid"; then
+            printf '%s\n' "$pid"
+            return 0
+        fi
+    done
+    return 1
+}
 
 case "$1" in
     start)
         echo "Starting NovelAI backend service..."
         
         # Check if already running
-        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            echo "NovelAI backend already running (PID: $(cat "$PID_FILE"))"
+        if pid=$(find_server_pid); then
+            echo "NovelAI backend already running (PID: $pid)"
             exit 0
         fi
 
@@ -51,11 +84,6 @@ case "$1" in
         export TRIM_APPDEST="$TRIM_APPDEST"
         export TRIM_PKGVAR="$TRIM_PKGVAR"
         export GATEWAY_PREFIX="/app/novelai"
-
-        SERVER_JS="${TRIM_APPDEST}/server/app.js"
-        if [ ! -f "$SERVER_JS" ] && [ -f "${TRIM_APPDEST}/app/server/app.js" ]; then
-            SERVER_JS="${TRIM_APPDEST}/app/server/app.js"
-        fi
 
         # 运行日志轮转：启动时归档上一份日志，保留最新 5 份历史归档 + 1 份当前运行中的 server.log
         if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
@@ -70,37 +98,41 @@ case "$1" in
         fi
 
         nohup "$NODE_BIN" "$SERVER_JS" >> "$LOG_FILE" 2>&1 &
-        echo $! > "$PID_FILE"
+        pid=$!
+        echo "$pid" > "$PID_FILE"
 
         # Wait up to 5 seconds for socket or startup
         for i in {1..10}; do
-            if [ -S "$SOCKET_FILE" ] || kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
-                echo "NovelAI service started successfully (PID: $(cat "$PID_FILE"))"
-                break
+            if [ -S "$SOCKET_FILE" ] && is_server_running "$pid"; then
+                echo "NovelAI service started successfully (PID: $pid)"
+                exit 0
             fi
+            kill -0 "$pid" 2>/dev/null || break
             sleep 0.5
         done
-
-        exit 0
+        echo "NovelAI backend did not start. See $LOG_FILE" >&2
+        exit 1
         ;;
     stop)
         echo "Stopping NovelAI backend service..."
-        if [ -f "$PID_FILE" ]; then
-            kill -TERM "$(cat "$PID_FILE")" 2>/dev/null || true
-            rm -f "$PID_FILE"
+        if pid=$(find_server_pid); then
+            if ! kill -TERM "$pid" 2>/dev/null && is_server_running "$pid"; then
+                echo "Could not stop NovelAI backend (PID: $pid)" >&2
+                exit 1
+            fi
+            for ((attempt = 0; attempt < 80; attempt++)); do
+                is_server_running "$pid" || break
+                sleep 0.25
+            done
+            if is_server_running "$pid"; then
+                echo "NovelAI backend is still shutting down (PID: $pid). See $LOG_FILE" >&2
+                exit 1
+            fi
         fi
-        
-        # Remove socket
-        rm -f "$SOCKET_FILE"
-
-        pkill -TERM -f "${TRIM_APPDEST}/.*server/app\.js" 2>/dev/null || true
-        sleep 0.5
-        pkill -9 -f "${TRIM_APPDEST}/.*server/app\.js" 2>/dev/null || true
-
-        exit 0
+        rm -f "$PID_FILE" "$SOCKET_FILE"
         ;;
     status)
-        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if find_server_pid >/dev/null; then
             exit 0
         fi
         exit 3
