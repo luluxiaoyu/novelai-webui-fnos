@@ -150,6 +150,7 @@ const isPickingDirectory = ref(false);
 const isOpeningFileManager = ref(false);
 const isOpeningAppSetting = ref(false);
 const appSettingActionFeedback = ref<{ success: boolean; message: string } | null>(null);
+const isRecoveringImages = ref(false);
 const originalStoragePath = ref('');
 const canManageStorage = ref(false);
 const authorizationWarning = ref('');
@@ -160,6 +161,25 @@ let settingsRequest = 0;
 let validationRequest = 0;
 let authorizationRevision: number | null = null;
 let removeAuthorizationListener: (() => void) | undefined;
+
+const recoverUnindexedImages = async () => {
+  if (isRecoveringImages.value || !canManageStorage.value || isSwitchingPath.value || isMerging.value) return;
+  isRecoveringImages.value = true;
+  appSettingActionFeedback.value = null;
+  try {
+    const { data } = await encryptedAxios({ method: 'POST', url: '/api/profiles/images/recover' });
+    appSettingActionFeedback.value = {
+      success: true,
+      message: data.recovered ? `已将 ${data.recovered} 张图片补回当前存档的历史` : '当前存档没有发现可补回的图片'
+    };
+    if (data.recovered) await useGenerationStore().loadProfileData();
+  } catch (err: any) {
+    appSettingActionFeedback.value = { success: false, message: err.response?.data?.error || '找回未入库图片失败' };
+  } finally {
+    isRecoveringImages.value = false;
+  }
+};
+
 watch(storagePath, () => {
   candidateRevision++;
   validationRequest++;
@@ -920,6 +940,12 @@ const handleDeleteProfile = async (name: string) => {
                     <ExternalLink class="w-3 h-3" />{{ isOpeningAppSetting ? '正在打开…' : '打开飞牛应用设置' }}
                   </button>
                   <p>也可在飞牛【应用中心 → 已安装 → NovelAI WebUI → 设置 → 访问权限】添加读写授权，再刷新列表。</p>
+                  <button type="button" @click="recoverUnindexedImages" :disabled="isRecoveringImages"
+                    class="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 inline-flex items-center gap-1.5 disabled:opacity-50">
+                    <Loader2 v-if="isRecoveringImages" class="w-3.5 h-3.5 animate-spin" />
+                    {{ isRecoveringImages ? '正在找回…' : '找回未入库图片' }}
+                  </button>
+                  <p>恢复写入权限后，可将已保存到磁盘的图片补回当前存档历史。</p>
                 </div>
               </details>
               <div class="flex flex-wrap items-center gap-2">

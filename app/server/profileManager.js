@@ -10,6 +10,8 @@ function getStoragePath() {
 
 function getProfilesDir() {
   const storagePath = getStoragePath();
+  // A missing mount should surface as an error rather than an empty new history.
+  if (!fs.statSync(storagePath).isDirectory()) throw new Error('当前存储路径不是目录');
   const dir = path.join(storagePath, 'profiles');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -27,7 +29,7 @@ function getProfileDir(profileName) {
   const profilesDir = getProfilesDir();
   const targetDir = path.join(profilesDir, sanitized);
   const imagesDir = path.join(targetDir, 'images');
-  if (!fs.existsSync(imagesDir)) {
+  if (!fs.existsSync(targetDir)) {
     fs.mkdirSync(imagesDir, { recursive: true });
   }
   return targetDir;
@@ -179,9 +181,10 @@ function switchProfile(name) {
 
 function getProfileData(profileName, options = {}) {
   const sanitized = sanitizeProfileName(profileName) || 'Default';
-  const targetDir = getProfileDir(sanitized);
-  const db = profileDb.getDb(targetDir, sanitized);
+  return profileDb.withReadableDb(getProfileDir(sanitized), sanitized, db => readProfileData(db, options));
+}
 
+function readProfileData(db, options) {
   const promptHistory = profileDb.getAllPromptHistory(db);
   const promptGroups = profileDb.getAllPromptGroups(db);
   const customStyles = profileDb.getAllStyles(db);
@@ -427,11 +430,64 @@ function addHistoryItem(profileName, item) {
   return profileDb.addHistoryItem(db, item);
 }
 
+function saveGeneratedImage(profileName, id, buffer, item) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
+  const db = profileDb.getDb(getProfileDir(sanitized), sanitized);
+  const { image: _source, mask: _mask, ...params } = item.params || {};
+  const url = saveGeneratedImageFile(sanitized, id, buffer, item);
+  const historyItem = {
+    id,
+    url,
+    params,
+    timestamp: item.timestamp || Date.now(),
+    prompt: item.prompt || params.prompt || '',
+    negative_prompt: item.negative_prompt || params.negative_prompt || '',
+    model: item.model || params.model || '',
+    isUpscaled: Boolean(item.isUpscaled || params.is_upscaled)
+  };
+  profileDb.addHistoryItem(db, historyItem);
+  return historyItem;
+}
+
 function getHistory(profileName, options) {
   const sanitized = sanitizeProfileName(profileName) || 'Default';
+  return profileDb.withReadableDb(getProfileDir(sanitized), sanitized, db => profileDb.getHistory(db, options));
+}
+
+function getProfileImageUrl(profileName, profileDir, filePath) {
+  const segments = path.relative(profileDir, filePath).split(path.sep).map(encodeURIComponent).join('/');
+  return `/api/images/${encodeURIComponent(profileName)}/${segments}`;
+}
+
+function recoverUnindexedImages(profileName) {
+  const sanitized = sanitizeProfileName(profileName) || 'Default';
   const profileDir = getProfileDir(sanitized);
+  if (!fs.lstatSync(profileDir).isDirectory()) throw new Error('当前存档不是普通目录');
+
   const db = profileDb.getDb(profileDir, sanitized);
-  return profileDb.getHistory(db, options);
+  const rows = db.prepare('SELECT id, url FROM history').all();
+  const indexed = new Set(rows.map(row => row.id));
+  const indexedUrls = new Set(rows.map(row => row.url));
+  const dirs = [profileDir];
+  const items = [];
+  while (dirs.length > 0) {
+    const dir = dirs.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const filePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        dirs.push(filePath);
+      } else if (entry.isFile()) {
+        const match = /^(\d{13}-[a-z0-9]{1,8})\.png$/.exec(entry.name);
+        if (!match || indexed.has(match[1]) || indexed.has(entry.name)) continue;
+        const url = getProfileImageUrl(sanitized, profileDir, filePath);
+        if (indexedUrls.has(url)) continue;
+        indexed.add(match[1]);
+        items.push({ id: match[1], url, timestamp: Number(match[1].slice(0, 13)) });
+      }
+    }
+  }
+
+  return profileDb.restoreHistoryImages(db, items);
 }
 
 function saveGeneratedImageFile(profileName, id, buffer, metadata = {}) {
@@ -470,9 +526,7 @@ function saveGeneratedImageFile(profileName, id, buffer, metadata = {}) {
   const filePath = path.join(safeSubdir, fileName);
   fs.writeFileSync(filePath, buffer);
 
-  const fileRelPath = path.relative(profileDir, filePath).replace(/\\/g, '/');
-  const urlSegments = fileRelPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
-  return `/api/images/${encodeURIComponent(sanitized)}/${urlSegments}`;
+  return getProfileImageUrl(sanitized, profileDir, filePath);
 }
 
 function deleteHistoryItem(profileName, id) {
@@ -702,8 +756,9 @@ function getImagePath(profileName, subpathOrId) {
 
   // 3. Database URL lookup (by id or filename)
   try {
-    const db = profileDb.getDb(profileDir, sanitized);
-    const historyUrl = profileDb.getHistoryUrlById(db, decoded) || profileDb.getHistoryUrlById(db, path.basename(decoded));
+    const historyUrl = profileDb.withReadableDb(profileDir, sanitized, db =>
+      profileDb.getHistoryUrlById(db, decoded) || profileDb.getHistoryUrlById(db, path.basename(decoded))
+    );
     if (historyUrl && typeof historyUrl === 'string') {
       const relFromUrl = decodeURIComponent(historyUrl.replace(/^.*\/api\/images\/[^/]+\//, ''));
       const dbCandidate = path.resolve(profileDir, relFromUrl);
@@ -745,6 +800,8 @@ module.exports = {
   addHistoryItem,
   getHistory,
   saveGeneratedImageFile,
+  saveGeneratedImage,
+  recoverUnindexedImages,
   deleteHistoryItem,
   batchDeleteHistoryItems,
   getImagePath

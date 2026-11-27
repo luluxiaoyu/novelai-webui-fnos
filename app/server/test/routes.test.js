@@ -6,6 +6,7 @@ const os = require('os');
 
 const TEST_DIR = path.join(os.tmpdir(), `novelai_routes_test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
 process.env.NOVELAI_SHARE_DIR = TEST_DIR;
+process.env.TRIM_PKGVAR = path.join(TEST_DIR, 'pkg-var');
 
 const configManager = require('../configManager');
 configManager.updateConfig({ storagePath: TEST_DIR, activeProfile: 'Default' });
@@ -15,7 +16,7 @@ const profileManager = require('../profileManager');
 
 let app;
 
-function invoke(method, urlPath, body = null) {
+function invoke(method, urlPath, body = null, headers = {}) {
   return new Promise((resolve) => {
     let qIdx = urlPath.indexOf('?');
     let pathOnly = qIdx !== -1 ? urlPath.slice(0, qIdx) : urlPath;
@@ -37,7 +38,8 @@ function invoke(method, urlPath, body = null) {
       query,
       body: body || {},
       headers: {
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        ...headers
       }
     };
 
@@ -81,6 +83,19 @@ describe('Express HTTP API & Routes In-Process Tests', () => {
     try {
       fs.rmSync(TEST_DIR, { recursive: true, force: true });
     } catch {}
+  });
+
+  test('only a fnOS administrator can recover unindexed images from the active profile', async () => {
+    const url = '/api/profiles/images/recover';
+    const id = '1700000000001-lost';
+    const imageUrl = profileManager.saveGeneratedImageFile('Default', id, Buffer.from('test image'));
+    assert.equal((await invoke('POST', url)).status, 403);
+    assert.equal(profileManager.getHistory('Default').total, 0);
+
+    const admin = { 'x-trim-isadmin': 'true' };
+    assert.deepEqual((await invoke('POST', url, null, admin)).data, { success: true, recovered: 1 });
+    assert.equal(profileManager.getHistory('Default').history[0].url, imageUrl);
+    assert.deepEqual((await invoke('POST', url, null, admin)).data, { success: true, recovered: 0 });
   });
 
   test('1. GET /api/profiles and POST /api/profiles', async () => {

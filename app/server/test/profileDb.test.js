@@ -3,10 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { DatabaseSync } = require('node:sqlite');
 
 // Point storage to a temporary directory for tests
 const TEST_DIR = path.join(os.tmpdir(), `novelai_test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
 process.env.NOVELAI_SHARE_DIR = TEST_DIR;
+process.env.TRIM_PKGVAR = path.join(TEST_DIR, 'pkg-var');
 
 const configManager = require('../configManager');
 configManager.updateConfig({ storagePath: TEST_DIR });
@@ -24,6 +26,60 @@ describe('SQLite Profile Storage & Silent Migration Tests', () => {
     try {
       fs.rmSync(TEST_DIR, { recursive: true, force: true });
     } catch {}
+  });
+
+  test('reads old history when SQLite cannot open the database for writing', (t) => {
+    if (process.getuid?.() === 0) return t.skip('Requires an unprivileged process');
+    const profile = 'ReadOnly';
+    const dir = profileManager.getProfileDir(profile);
+    const dbPath = path.join(dir, 'profile.db');
+    const db = profileDb.getDb(dir, profile);
+    profileDb.addHistoryItem(db, { id: 'old-image', url: '/api/images/ReadOnly/old-image.png', params: 'null' });
+    profileDb.saveSetting(db, 'params', { prompt: 'Saved prompt' });
+    profileDb.closeDb(dir);
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.exec('PRAGMA journal_mode = DELETE;');
+    rawDb.close();
+    fs.chmodSync(dbPath, 0o444);
+
+    assert.throws(() => profileDb.getDb(dir, profile), /readonly database/);
+    assert.equal(profileManager.getHistory(profile).history[0].id, 'old-image');
+    assert.equal(profileManager.getProfileData(profile).params.prompt, 'Saved prompt');
+    assert.throws(() => profileManager.saveProfileData(profile, { params: { prompt: 'New prompt' } }), /readonly database/);
+
+    const unindexedId = '1700000000000-lost';
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    profileManager.saveGeneratedImageFile(profile, unindexedId, png);
+    fs.chmodSync(dbPath, 0o644);
+    assert.equal(profileManager.recoverUnindexedImages(profile), 1);
+    assert.ok(profileManager.getHistory(profile).history.some(item => item.id === unindexedId));
+  });
+
+  test('restores eligible disk images without replacing existing history or exposing old source images', () => {
+    const profile = 'Recovery';
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    const oldId = '1700000000000-old1';
+    const lostId = '1700000000001-lost';
+    const url = profileManager.saveGeneratedImageFile(profile, oldId, png);
+    profileManager.addHistoryItem(profile, { id: oldId, url, params: { prompt: 'Saved prompt', image: 'source', mask: 'mask' } });
+    const lostUrl = profileManager.saveGeneratedImageFile(profile, lostId, png);
+    profileManager.saveGeneratedImageFile(profile, 'unrelated', png);
+
+    const dir = profileManager.getProfileDir(profile);
+    const foreignDir = fs.mkdtempSync(path.join(TEST_DIR, 'foreign-'));
+    fs.writeFileSync(path.join(foreignDir, '1700000000002-link.png'), png);
+    fs.symlinkSync(foreignDir, path.join(dir, 'foreign'), 'dir');
+
+    assert.equal(profileManager.recoverUnindexedImages(profile), 1);
+    assert.equal(profileManager.recoverUnindexedImages(profile), 0);
+    const { history } = profileManager.getHistory(profile);
+    const old = history.find(item => item.id === oldId);
+    assert.equal(old.params.prompt, 'Saved prompt');
+    assert.equal(old.params.image, undefined);
+    assert.equal(old.params.mask, undefined);
+    assert.equal(history.find(item => item.id === lostId).url, lostUrl);
+    assert.equal(history.length, 2);
+    assert.deepEqual(fs.readFileSync(profileManager.getImagePath(profile, lostUrl)), png);
   });
 
   test('1. Database schema, tables, and WAL mode verification', () => {

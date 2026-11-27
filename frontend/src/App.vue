@@ -1010,12 +1010,14 @@ watch(() => genStore.imageMode, mode => {
 });
 
 const maskCanvasReady = ref(false);
-let isOpeningMaskEditor = false;
+const isOpeningMaskEditor = ref(false);
+const maskEditorError = ref('');
 const openInpaintEditor = async (url?: string) => {
   const targetUrl = url || genStore.currentImage?.url;
-  if (!targetUrl || isOpeningMaskEditor) return;
+  if (!targetUrl || isOpeningMaskEditor.value) return;
 
-  isOpeningMaskEditor = true;
+  isOpeningMaskEditor.value = true;
+  maskEditorError.value = '';
   try {
     if (targetUrl !== inpaintImageSrc.value) await genStore.sendToInpaint(targetUrl);
     genStore.imageMode = 'inpaint';
@@ -1024,9 +1026,9 @@ const openInpaintEditor = async (url?: string) => {
     mobileTab.value = 'canvas';
     resetZoom();
   } catch (error) {
-    alert(error instanceof Error ? error.message : '无法打开重绘底图');
+    maskEditorError.value = error instanceof Error ? error.message : '无法打开重绘底图';
   } finally {
-    isOpeningMaskEditor = false;
+    isOpeningMaskEditor.value = false;
   }
 };
 
@@ -1068,6 +1070,11 @@ const handleInpaintImgLoaded = (e: Event) => {
   if (w > 0 && h > 0) {
     applyDimensionsAndMask(w, h);
   }
+};
+
+const handleInpaintImgError = () => {
+  showMaskEditor.value = false;
+  maskEditorError.value = '重绘底图无法显示，请重新选择底图后重试';
 };
 
 let lastDrawPos: { x: number; y: number } | null = null;
@@ -2290,7 +2297,7 @@ watch(
                 </label>
               </template>
               <template v-else>
-                <button type="button" @click="openInpaintEditor(inpaintImageSrc)" class="w-full text-white font-medium bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg transition">
+                <button type="button" @click="openInpaintEditor(inpaintImageSrc)" :disabled="isOpeningMaskEditor" class="w-full text-white font-medium bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg transition">
                   {{ genStore.params.mask ? '编辑重绘区域' : '绘制重绘区域' }}
                 </button>
                 <p class="text-gray-500 dark:text-gray-400">{{ genStore.params.mask ? '仅重绘遮罩覆盖的区域。' : '请先涂抹并保存要重绘的区域。' }}</p>
@@ -2339,36 +2346,40 @@ watch(
         >
           <!-- 局部重绘 涂鸦模式 -->
           <template v-if="genStore.params.image && showMaskEditor">
-            <div 
-              class="flex items-center justify-center max-w-full max-h-full"
-              :class="[
-                (isPanning || isTouchPanning) ? 'transition-none will-change-transform' : 'transition-transform duration-75 ease-out'
-              ]"
-              :style="{ transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})` }"
-            >
-              <div class="relative shadow-2xl rounded-lg overflow-hidden border border-gray-300 dark:border-gray-700 shrink-0 select-none">
-                <!-- 底图 -->
-                <img 
-                  :src="inpaintImageSrc" 
-                  class="block max-w-[85vw] max-h-[85vh] w-auto h-auto pointer-events-none select-none" 
-                  draggable="false"
-                  @load="handleInpaintImgLoaded"
-                />
-                <!-- 遮罩涂抹 Canvas -->
-                <canvas 
-                  ref="canvasRef" 
-                  class="absolute inset-0 w-full h-full cursor-crosshair opacity-75 touch-none"
-                  @mousedown.stop="startDraw"
-                  @mousemove.stop="draw"
-                  @mouseup.stop="stopDraw"
-                  @mouseleave.stop="stopDraw"
-                  @touchstart.stop.prevent="startDraw"
-                  @touchmove.stop.prevent="draw"
-                  @touchend.stop="stopDraw"
-                ></canvas>
+            <div class="absolute inset-0 flex items-center justify-center [container-type:size]">
+              <div
+                class="flex items-center justify-center max-w-full max-h-full"
+                :class="[
+                  (isPanning || isTouchPanning) ? 'transition-none will-change-transform' : 'transition-transform duration-75 ease-out'
+                ]"
+                :style="{ transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})` }"
+              >
+                <div class="relative shadow-2xl rounded-lg overflow-hidden border border-gray-300 dark:border-gray-700 shrink-0 select-none">
+                  <!-- 底图 -->
+                  <img
+                    :src="inpaintImageSrc"
+                    class="block max-w-[calc(100cqw_-_1rem)] max-h-[calc(100cqh_-_6rem)] w-auto h-auto pointer-events-none select-none"
+                    draggable="false"
+                    @load="handleInpaintImgLoaded"
+                    @error="handleInpaintImgError"
+                  />
+                  <!-- 遮罩涂抹 Canvas -->
+                  <canvas
+                    ref="canvasRef"
+                    class="absolute inset-0 w-full h-full cursor-crosshair opacity-75 touch-none"
+                    @mousedown.stop="startDraw"
+                    @mousemove.stop="draw"
+                    @mouseup.stop="stopDraw"
+                    @mouseleave.stop="stopDraw"
+                    @touchstart.stop.prevent="startDraw"
+                    @touchmove.stop.prevent="draw"
+                    @touchend.stop="stopDraw"
+                  ></canvas>
+                </div>
               </div>
+
             </div>
-            
+
             <!-- 涂鸦悬浮工具栏 (移动端避免被底部导航遮挡，设置 bottom-24) -->
             <div class="absolute bottom-24 sm:bottom-6 left-2 right-2 mx-auto w-fit flex flex-wrap justify-center items-center gap-2 sm:gap-4 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border border-gray-200 dark:border-gray-800 p-2.5 sm:p-3 rounded-2xl shadow-2xl z-30 max-w-full">
               <div class="flex items-center gap-2">
@@ -2415,7 +2426,8 @@ watch(
               </span>
               <div class="flex items-center gap-1.5 sm:gap-2">
                 <button 
-                  @click="openInpaintEditor(genStore.currentImage?.url)" 
+                  @click="openInpaintEditor(genStore.currentImage?.url)"
+                  :disabled="isOpeningMaskEditor"
                   class="bg-white/95 hover:bg-blue-50 dark:bg-gray-900/95 dark:hover:bg-blue-900/50 text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 border border-gray-200 dark:border-gray-700 p-2 sm:p-2.5 rounded-xl shadow-lg transition backdrop-blur-md flex items-center justify-center active:scale-95" 
                   title="局部重绘"
                 >
@@ -2516,6 +2528,29 @@ watch(
               <ImageIcon class="w-16 h-16 opacity-40" />
               <p class="text-sm font-medium">在左侧输入提示词并生成，图像将在此呈现</p>
             </template>
+          </div>
+
+          <div aria-live="polite" class="absolute top-14 left-2 right-2 z-30 flex justify-center pointer-events-none">
+            <div v-if="maskEditorError || isOpeningMaskEditor || genStore.profileLoadError || genStore.imageSaveFailure || genStore.profileSaveError"
+              class="flex max-w-xl flex-wrap items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow dark:border-amber-900 dark:bg-gray-900 dark:text-amber-200 pointer-events-auto">
+              <template v-if="maskEditorError">
+                <span>{{ maskEditorError }}</span>
+                <button type="button" class="underline" @click="maskEditorError = ''">关闭</button>
+              </template>
+              <template v-else-if="isOpeningMaskEditor">
+                <Loader2 class="h-4 w-4 animate-spin" />
+                <span>正在读取重绘底图…</span>
+              </template>
+              <template v-else-if="genStore.imageSaveFailure">
+                <span>图片尚未保存到 NAS。{{ genStore.imageSaveFailure.message }}</span>
+                <button type="button" class="underline" @click="genStore.retryImageSave()">重试保存图片</button>
+              </template>
+              <template v-else-if="genStore.profileLoadError">
+                <span>历史读取失败。{{ genStore.profileLoadError }}</span>
+                <button type="button" class="underline" @click="genStore.loadProfileData()">重试读取</button>
+              </template>
+              <span v-else>存档设置保存失败。{{ genStore.profileSaveError }}</span>
+            </div>
           </div>
 
           <!-- 切换存档或刷新历史时的浮动加载提示 -->

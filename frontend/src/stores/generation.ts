@@ -7,6 +7,15 @@ import JSZip from 'jszip';
 import { useAuthStore } from './auth';
 import { useProfileStore } from './profile';
 
+function storageErrorMessage(error: unknown) {
+  if (isAxiosError(error)) {
+    const message = error.response?.data?.error;
+    if (typeof message === 'string' && message) return message;
+    if (error.response?.status === 413) return '写入请求超过网关大小限制';
+  }
+  return error instanceof Error ? error.message : '未知错误';
+}
+
 export interface CharacterPrompt {
   id: string;
   prompt: string;
@@ -181,11 +190,16 @@ export const useGenerationStore = defineStore('generation', () => {
 
   const isLoadingHistory = ref(false);
   const isProfileDataLoaded = ref(false);
+  const profileLoadError = ref('');
+  const profileSaveError = ref('');
+  const imageSaveFailure = ref<{ image: GeneratedImage; message: string } | null>(null);
   let loadProfilePromise: Promise<void> | null = null;
 
   // 防抖保存活动存档元数据至 NAS（带合并缓冲队列与显式删除标志）
   let saveTimer: any = null;
   let pendingSaveData: Record<string, any> = {};
+  let saveContext = 0;
+  let activeFlush: Promise<boolean> | null = null;
 
   const saveProfileData = async (partialData?: Record<string, any>) => {
     if (loadProfilePromise) {
@@ -193,8 +207,9 @@ export const useGenerationStore = defineStore('generation', () => {
     }
     if (!isProfileDataLoaded.value) {
       console.warn('[GenStore] saveProfileData skipped: profile data has not finished loading');
-      return;
+      return false;
     }
+    const context = saveContext;
     try {
       const current = profileStore.currentProfile || 'Default';
       let payloadData: Record<string, any>;
@@ -214,8 +229,13 @@ export const useGenerationStore = defineStore('generation', () => {
           data: payloadData
         }
       });
-    } catch (err: any) {
-      console.warn('[GenStore] Failed to save profile data to NAS:', err.message);
+      if (context === saveContext) profileSaveError.value = '';
+      return true;
+    } catch (error) {
+      const message = storageErrorMessage(error);
+      if (context === saveContext) profileSaveError.value = message;
+      console.warn('[GenStore] Failed to save profile data to NAS:', message);
+      return false;
     }
   };
 
@@ -224,15 +244,25 @@ export const useGenerationStore = defineStore('generation', () => {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
-    if (!isProfileDataLoaded.value) return;
-    const keys = Object.keys(pendingSaveData);
-    if (keys.length === 0) return;
-    const toSend = { ...pendingSaveData };
+    const context = saveContext;
+    while (activeFlush) await activeFlush;
+    if (context !== saveContext || !isProfileDataLoaded.value || Object.keys(pendingSaveData).length === 0) return;
+
+    const toSend = pendingSaveData;
     pendingSaveData = {};
-    await saveProfileData(toSend);
+    activeFlush = saveProfileData(toSend);
+    try {
+      if (!await activeFlush && context === saveContext) {
+        pendingSaveData = { ...toSend, ...pendingSaveData };
+      }
+    } finally {
+      activeFlush = null;
+    }
   };
 
   const cancelPendingSave = () => {
+    saveContext++;
+    profileSaveError.value = '';
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
@@ -269,7 +299,9 @@ export const useGenerationStore = defineStore('generation', () => {
       params.seed,
       params.noise_schedule,
       params.cfg_rescale,
-      params.uncond_scale
+      params.uncond_scale,
+      params.strength,
+      params.noise
     ],
     () => {
       if (!isProfileDataLoaded.value) return;
@@ -277,7 +309,8 @@ export const useGenerationStore = defineStore('generation', () => {
       delete cleanParams.image;
       delete cleanParams.mask;
       saveProfileDataDebounced({ params: cleanParams });
-    }
+    },
+    { flush: 'sync' }
   );
 
   const saveCustomCharacters = async (allowEmpty = false) => {
@@ -301,6 +334,8 @@ export const useGenerationStore = defineStore('generation', () => {
   // 从 NAS 加载活动存档数据
   const loadProfileData = async (profileName?: string) => {
     const target = profileName || profileStore.currentProfile || 'Default';
+    isProfileDataLoaded.value = false;
+    profileLoadError.value = '';
     loadProfilePromise = (async () => {
       try {
         isLoadingHistory.value = true;
@@ -332,9 +367,12 @@ export const useGenerationStore = defineStore('generation', () => {
             useParams(history.value[0].params, false);
           }
           isProfileDataLoaded.value = true;
+        } else {
+          throw new Error(res.data?.error || '存档读取失败');
         }
-      } catch (err: any) {
-        console.warn('[GenStore] Failed to load profile data:', err.message);
+      } catch (error) {
+        profileLoadError.value = storageErrorMessage(error);
+        console.warn('[GenStore] Failed to load profile data:', profileLoadError.value);
       } finally {
         isLoadingHistory.value = false;
         loadProfilePromise = null;
@@ -381,6 +419,7 @@ export const useGenerationStore = defineStore('generation', () => {
 
   const saveImageToNas = async (profile: string, image: GeneratedImage) => {
     try {
+      const { image: _source, mask: _mask, ...metadata } = image.params || {};
       const res = await encryptedAxios({
         method: 'POST',
         url: '/api/profiles/images/save',
@@ -389,7 +428,7 @@ export const useGenerationStore = defineStore('generation', () => {
           item: {
             id: image.id,
             image: image.url,
-            params: image.params,
+            params: metadata,
             timestamp: image.timestamp || Date.now()
           }
         }
@@ -398,10 +437,11 @@ export const useGenerationStore = defineStore('generation', () => {
         throw new Error(res.data?.error || 'NAS 未返回保存后的图片地址');
       }
       image.url = resolveApiUrl(res.data.url);
+      if (imageSaveFailure.value?.image === image) imageSaveFailure.value = null;
       return image.url;
     } catch (error) {
-      const message = isAxiosError(error) ? error.response?.data?.error || error.message
-        : error instanceof Error ? error.message : '未知错误';
+      const message = storageErrorMessage(error);
+      imageSaveFailure.value = { image, message };
       throw new Error(`写入 NAS 失败：${message}`);
     }
   };
@@ -421,6 +461,16 @@ export const useGenerationStore = defineStore('generation', () => {
     }
     const url = save.pending ? await save.pending : item.url;
     return { profile: save.profile, url };
+  };
+
+  const retryImageSave = async () => {
+    const image = imageSaveFailure.value?.image;
+    if (!image) return;
+    try {
+      await ensureNasImageSaved(profileStore.currentProfile, image);
+    } catch (error) {
+      console.warn('[GenStore] Failed to retry image save:', error);
+    }
   };
 
   const pushGeneratedImage = async (generated: GeneratedImage) => {
@@ -573,8 +623,14 @@ export const useGenerationStore = defineStore('generation', () => {
   };
 
   const sendToInpaint = async (url: string) => {
-    const source = /^(https?:|blob:|data:|\/)/.test(url) ? url : `data:image/png;base64,${url}`;
-    setBaseImage(await prepareBaseImage(resolveApiUrl(source)), 'inpaint');
+    const source = resolveApiUrl(/^(https?:|blob:|data:|\/)/.test(url) ? url : `data:image/png;base64,${url}`);
+    if (source.startsWith('data:')) {
+      setBaseImage(await prepareBaseImage(source), 'inpaint');
+      return;
+    }
+    const response = await fetch(source);
+    if (!response.ok) throw new Error(`底图读取失败（HTTP ${response.status}）`);
+    setBaseImage(await prepareBaseImage(await response.blob()), 'inpaint');
   };
 
   const useParams = (p: GenerationParams | GeneratedImage | any, keepSeed = false) => {
@@ -641,6 +697,8 @@ export const useGenerationStore = defineStore('generation', () => {
 
   const generateSingle = async () => {
     const seedToUse = params.seed === -1 ? Math.floor(Math.random() * 4294967295) : params.seed;
+    const { image: _source, mask: _mask, ...settings } = params;
+    const generatedParams = JSON.parse(JSON.stringify({ ...settings, seed: seedToUse }));
     const isV4OrV5 = params.model.includes('-4') || params.model.includes('-5') || params.model.includes('v4') || params.model.includes('v5');
     const isV5 = params.model.includes('diffusion-5') || params.model.includes('v5');
 
@@ -931,11 +989,11 @@ export const useGenerationStore = defineStore('generation', () => {
                       const generated: GeneratedImage = {
                         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                         url: finalUrl,
-                        params: JSON.parse(JSON.stringify({ ...params, seed: seedToUse })),
+                        params: generatedParams,
                         timestamp: Date.now(),
                         isNew: batchTotal.value > 1
                       };
-                      pushGeneratedImage(generated);
+                      await pushGeneratedImage(generated);
                       if (activeBlobUrl) {
                         URL.revokeObjectURL(activeBlobUrl);
                         activeBlobUrl = null;
@@ -955,11 +1013,11 @@ export const useGenerationStore = defineStore('generation', () => {
                       const finalItem = parsed.item || {
                         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                         url: parsed.url,
-                        params: JSON.parse(JSON.stringify({ ...params, seed: seedToUse })),
+                        params: generatedParams,
                         timestamp: Date.now(),
                         isNew: batchTotal.value > 1
                       };
-                      pushGeneratedImage(finalItem);
+                      await pushGeneratedImage(finalItem);
                       if (activeBlobUrl) {
                         URL.revokeObjectURL(activeBlobUrl);
                         activeBlobUrl = null;
@@ -971,11 +1029,11 @@ export const useGenerationStore = defineStore('generation', () => {
                       const generated: GeneratedImage = {
                         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                         url: finalUrl,
-                        params: JSON.parse(JSON.stringify({ ...params, seed: seedToUse })),
+                        params: generatedParams,
                         timestamp: Date.now(),
                         isNew: batchTotal.value > 1
                       };
-                      pushGeneratedImage(generated);
+                      await pushGeneratedImage(generated);
                       if (activeBlobUrl) {
                         URL.revokeObjectURL(activeBlobUrl);
                         activeBlobUrl = null;
@@ -999,11 +1057,11 @@ export const useGenerationStore = defineStore('generation', () => {
             const generated: GeneratedImage = {
               id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               url: finalUrl,
-              params: JSON.parse(JSON.stringify({ ...params, seed: seedToUse })),
+              params: generatedParams,
               timestamp: Date.now(),
               isNew: batchTotal.value > 1
             };
-            pushGeneratedImage(generated);
+            await pushGeneratedImage(generated);
             streamResultSaved = true;
           }
 
@@ -1043,11 +1101,11 @@ export const useGenerationStore = defineStore('generation', () => {
           const generated: GeneratedImage = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             url: dataUrl,
-            params: JSON.parse(JSON.stringify({ ...params, seed: seedToUse })),
+            params: generatedParams,
             timestamp: Date.now(),
             isNew: batchTotal.value > 1
           };
-          pushGeneratedImage(generated);
+          await pushGeneratedImage(generated);
         } else {
           throw new Error('未在返回的压缩包中找到图像文件');
         }
@@ -1232,7 +1290,7 @@ export const useGenerationStore = defineStore('generation', () => {
         throw new Error(serverError || '超分放大返回数据无效');
       }
 
-      pushGeneratedImage(generated);
+      await pushGeneratedImage(generated);
       try {
         await authStore.fetchUserData();
       } catch (e) {}
@@ -1290,6 +1348,10 @@ export const useGenerationStore = defineStore('generation', () => {
     clearCharacters,
     isLoadingHistory,
     isProfileDataLoaded,
+    profileLoadError,
+    profileSaveError,
+    imageSaveFailure,
+    retryImageSave,
     loadProfileData,
     saveProfileData,
     saveProfileDataDebounced,

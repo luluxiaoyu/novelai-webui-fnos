@@ -413,9 +413,11 @@ function migrateProfileIfNeeded(db, profileDir, profileName) {
       db.exec('ROLLBACK;');
     } catch {}
     console.error(`[ProfileDb] Migration transaction failed for profile "${profileName}":`, err.message);
-    try {
-      fs.renameSync(jsonPath, `${jsonPath}.bak.failed`);
-    } catch {}
+    if (!isDbAccessError(err)) {
+      try {
+        fs.renameSync(jsonPath, `${jsonPath}.bak.failed`);
+      } catch {}
+    }
     throw err;
   }
 }
@@ -436,7 +438,12 @@ function getDb(profileDir, profileName = 'Default') {
     const dbPath = path.join(normalizedDir, 'profile.db');
     db = new DatabaseSync(dbPath);
 
-    initDbSchema(db);
+    try {
+      initDbSchema(db);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
     dbCache.set(normalizedDir, db);
   }
 
@@ -447,6 +454,26 @@ function getDb(profileDir, profileName = 'Default') {
   }
 
   return db;
+}
+
+function isDbAccessError(error) {
+  const sqliteCode = error.code === 'ERR_SQLITE_ERROR' ? error.errcode & 0xff : null;
+  return ['EACCES', 'EPERM', 'EROFS'].includes(error.code) || sqliteCode === 8 || sqliteCode === 14;
+}
+
+function withReadableDb(profileDir, profileName, read) {
+  try {
+    return read(getDb(profileDir, profileName));
+  } catch (error) {
+    const dbPath = path.join(profileDir, 'profile.db');
+    if (!isDbAccessError(error) || !fs.existsSync(dbPath)) throw error;
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      return read(db);
+    } finally {
+      db.close();
+    }
+  }
 }
 
 /**
@@ -486,7 +513,8 @@ function formatDbRowToHistory(row) {
   let params = {};
   if (row.params) {
     try {
-      params = typeof row.params === 'string' ? JSON.parse(row.params) : row.params;
+      const parsed = typeof row.params === 'string' ? JSON.parse(row.params) : row.params;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) params = parsed;
     } catch {}
   }
   if (!params.prompt && row.prompt) params.prompt = row.prompt;
@@ -629,7 +657,13 @@ function getHistory(db, options = {}) {
   const total = countRow ? countRow.total : 0;
   const totalPages = pageSize ? Math.ceil(total / pageSize) || 1 : 1;
 
-  let querySql = `SELECT * FROM history ${whereSql} ORDER BY timestamp ${sort}`;
+  // Older entries embedded the source image and mask. Preserve them on disk
+  // while keeping history responses small enough for the NAS browser.
+  let querySql = `
+    SELECT id, url, timestamp, prompt, negative_prompt, model, created_at, is_upscaled,
+      CASE WHEN json_valid(params) THEN json_remove(params, '$.image', '$.mask') END AS params
+    FROM history ${whereSql} ORDER BY timestamp ${sort}
+  `;
   let queryParams = [...params];
 
   if (pageSize !== null) {
@@ -712,6 +746,25 @@ function addHistoryItems(db, items) {
   } catch (err) {
     db.exec('ROLLBACK;');
     throw err;
+  }
+}
+
+function restoreHistoryImages(db, items) {
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO history (id, url, timestamp, params, created_at)
+      VALUES (?, ?, ?, '{}', ?)
+    `);
+    let recovered = 0;
+    for (const { id, url, timestamp } of items) {
+      recovered += Number(insert.run(id, url, timestamp, timestamp).changes);
+    }
+    db.exec('COMMIT;');
+    return recovered;
+  } catch (error) {
+    db.exec('ROLLBACK;');
+    throw error;
   }
 }
 
@@ -1046,6 +1099,7 @@ function saveSetting(db, key, value) {
 module.exports = {
   initDbSchema,
   getDb,
+  withReadableDb,
   closeDb,
   closeAllDbs,
   migrateProfileIfNeeded,
@@ -1054,6 +1108,7 @@ module.exports = {
   getHistoryUrlsByIds,
   addHistoryItem,
   addHistoryItems,
+  restoreHistoryImages,
   deleteHistoryItem,
   batchDeleteHistoryItems,
   getAllPromptHistory,

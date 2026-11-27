@@ -390,6 +390,20 @@ router.delete('/profiles/:name', (req, res) => {
   }
 });
 
+function sendProfileStorageError(res, operation, error) {
+  console.error(`[ProfileStorage] ${operation}失败:`, error.message);
+  const sqliteCode = error.code === 'ERR_SQLITE_ERROR' ? (error.errcode & 0xff) : null;
+  let message = error.message;
+  if (['EACCES', 'EPERM', 'EROFS'].includes(error.code) || sqliteCode === 8) {
+    message = '当前存档不可写或无访问权限，请检查飞牛应用的目录授权和存档文件权限';
+  } else if (error.code === 'ENOENT' || sqliteCode === 14) {
+    message = '无法打开当前存储目录或存档数据库，请检查原存储空间是否已挂载并可读写';
+  } else if (error.code === 'ENOSPC' || sqliteCode === 13) {
+    message = '当前存储空间不足，请释放空间后重试';
+  }
+  return res.status(error.statusCode || 500).json({ success: false, error: message });
+}
+
 router.get('/profiles/data', (req, res) => {
   try {
     const cfg = getConfig();
@@ -405,7 +419,7 @@ router.get('/profiles/data', (req, res) => {
     const data = profileManager.getProfileData(profile, { limit, offset, page, pageSize });
     res.json({ success: true, profile, data });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return sendProfileStorageError(res, '读取存档', err);
   }
 });
 
@@ -417,7 +431,7 @@ router.post('/profiles/data', (req, res) => {
     profileManager.saveProfileData(target, data || {});
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return sendProfileStorageError(res, '写入存档', err);
   }
 });
 
@@ -449,7 +463,7 @@ router.get('/profiles/history', (req, res) => {
     const result = profileManager.getHistory(profile, { page, pageSize, offset, search, sort, isUpscaled, timeFilter });
     res.json({ success: true, profile, ...result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return sendProfileStorageError(res, '读取历史图片', err);
   }
 });
 
@@ -491,27 +505,20 @@ router.post('/profiles/images/save', (req, res) => {
       rawBase64 = rawBase64.split(',')[1];
     }
     const buf = Buffer.from(rawBase64, 'base64');
-    const imgUrl = profileManager.saveGeneratedImageFile(target, imgId, buf, item);
-
-    // Record directly in SQLite history
-    const historyItem = {
-      ...item,
-      id: imgId,
-      url: imgUrl,
-      prompt: item.prompt || item.params?.prompt || '',
-      negative_prompt: item.negative_prompt || item.params?.negative_prompt || item.params?.uc || '',
-      model: item.model || item.params?.model || '',
-      params: item.params || {},
-      timestamp: item.timestamp || Date.now(),
-      isUpscaled: Boolean(item.isUpscaled || item.params?.is_upscaled)
-    };
-
-    profileManager.addHistoryItem(target, historyItem);
-
-    res.json({ success: true, url: imgUrl, item: historyItem });
+    const historyItem = profileManager.saveGeneratedImage(target, imgId, buf, item);
+    res.json({ success: true, url: historyItem.url, item: historyItem });
   } catch (err) {
-    console.error('[Routes] Error saving image to disk:', err.message);
-    res.status(500).json({ error: err.message });
+    return sendProfileStorageError(res, '保存生成图片', err);
+  }
+});
+
+router.post('/profiles/images/recover', (req, res) => {
+  try {
+    assertStorageAdmin(req);
+    const recovered = profileManager.recoverUnindexedImages(getConfig().activeProfile || 'Default');
+    res.json({ success: true, recovered });
+  } catch (err) {
+    return sendProfileStorageError(res, '找回未入库图片', err);
   }
 });
 

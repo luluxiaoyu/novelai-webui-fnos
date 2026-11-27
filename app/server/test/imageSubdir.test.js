@@ -7,6 +7,7 @@ const express = require('express');
 
 const TEST_DIR = path.join(os.tmpdir(), `novelai_subdir_test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
 process.env.NOVELAI_SHARE_DIR = TEST_DIR;
+process.env.TRIM_PKGVAR = path.join(TEST_DIR, 'pkg-var');
 
 const configManager = require('../configManager');
 const profileDb = require('../profileDb');
