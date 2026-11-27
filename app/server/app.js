@@ -44,6 +44,13 @@ app.use((req, res, next) => {
 // Parse encrypted raw payloads first
 app.use(express.raw({ type: ['application/encrypted', 'application/octet-stream'], limit: '100mb' }));
 
+app.use('/api', (req, res, next) => {
+  // Prevent a browser or gateway from reusing a response encoded for another request.
+  res.set('Cache-Control', 'no-store');
+  res.vary('X-Encrypted');
+  next();
+});
+
 // Anti-sniffing XOR encryption middleware
 app.use(encryptionMiddleware);
 

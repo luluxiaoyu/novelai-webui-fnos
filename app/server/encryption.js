@@ -22,7 +22,11 @@ function getEncryptionKey(clientKey) {
 
 function encryptionMiddleware(req, res, next) {
   const cfg = getConfig();
-  if (!cfg.enableEncryption || req.headers['x-encrypted'] !== '1') {
+  if (req.headers['x-encrypted'] !== '1') return next();
+  if (!cfg.enableEncryption) {
+    if (Buffer.isBuffer(req.body) && req.body.length) {
+      return res.status(409).json({ success: false, error: '服务器已关闭加密，请刷新页面后重试' });
+    }
     return next();
   }
 
@@ -45,7 +49,7 @@ function encryptionMiddleware(req, res, next) {
     }
 
     if (!success) {
-      return res.status(400).send('Decryption failed');
+      return res.status(400).json({ success: false, error: '服务器无法解密请求，请刷新页面后重试' });
     }
   }
 
@@ -90,6 +94,7 @@ function encryptionMiddleware(req, res, next) {
 
   res.write = function (chunk, encoding, callback) {
     if (chunk) {
+      if (!res.headersSent) res.setHeader('x-encrypted', '1');
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8');
       const encrypted = Buffer.allocUnsafe(buffer.length);
       for (let i = 0; i < buffer.length; i++) {

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { encryptedAxios, setEncryptionConfig } from '../utils/api';
+import { encryptedAxios, fetchBackendSettings, setEncryptionConfig } from '../utils/api';
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string>('');
@@ -123,42 +123,24 @@ export const useAuthStore = defineStore('auth', () => {
   const allowPaid = ref<boolean>(true);
 
   const loadBackendSettings = async () => {
-    try {
-      const res = await encryptedAxios({
-        method: 'GET',
-        url: '/api/settings'
-      });
-      if (res.data && res.data.success) {
-        const s = res.data.settings || res.data;
-        if (s.apiToken) {
-          token.value = s.apiToken;
-          hasBuiltinKey.value = true;
-        }
-        if (s.enableEncryption !== undefined) {
-          setEncryptionConfig(s.enableEncryption, s.encryptionKey);
-        }
-      }
-    } catch (err: any) {
-      console.warn('[AuthStore] Failed to load backend settings:', err.message);
+    const settings = await fetchBackendSettings();
+    if (settings.apiToken) {
+      token.value = settings.apiToken;
+      hasBuiltinKey.value = true;
     }
+    setEncryptionConfig(settings.enableEncryption, settings.encryptionKey);
   };
 
   const checkSiteAuthStatus = async () => {
-    siteUnlocked.value = true;
-    siteAuthRequired.value = false;
-    siteAuthChecked.value = true;
+    siteAuthLoading.value = true;
     try {
-      siteAuthLoading.value = true;
       await loadBackendSettings();
-      if (token.value) {
-        await fetchUserData(token.value);
-      }
-    } catch (e: any) {
-      console.warn('Check site auth status error:', e);
     } finally {
+      siteUnlocked.value = true;
+      siteAuthRequired.value = false;
+      siteAuthChecked.value = true;
       siteAuthLoading.value = false;
     }
-    return true;
   };
 
   const verifySiteAccess = async (inputKey: string) => {

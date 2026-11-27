@@ -59,6 +59,20 @@ const handleWelcomeCompleted = async () => {
   }
 };
 
+const reloadHistory = async () => {
+  genStore.profileLoadError = '';
+  try {
+    await authStore.checkSiteAuthStatus();
+    await profileStore.fetchProfiles();
+    await genStore.loadProfileData(profileStore.currentProfile);
+    return true;
+  } catch (error) {
+    genStore.profileLoadError = error instanceof Error ? error.message : '无法加载服务器设置';
+    console.warn('[App] Failed to load NAS settings:', genStore.profileLoadError);
+    return false;
+  }
+};
+
 const checkIsIframe = () => {
   try {
     return window.self !== window.top;
@@ -1277,9 +1291,7 @@ onMounted(async () => {
     isDark.value = dark;
   });
 
-  await authStore.checkSiteAuthStatus();
-  await profileStore.fetchProfiles();
-  await genStore.loadProfileData(profileStore.currentProfile);
+  const settingsLoaded = await reloadHistory();
 
   genStore.isGenerating = false;
   genStore.streamPreviewUrl = null;
@@ -1296,9 +1308,9 @@ onMounted(async () => {
     }
   }
 
-  if (authStore.siteUnlocked && authStore.token) {
+  if (settingsLoaded && authStore.token) {
     authStore.fetchUserData();
-  } else if (!authStore.token || !authStore.token.trim()) {
+  } else if (settingsLoaded && !authStore.token?.trim()) {
     showWelcomeModal.value = true;
   }
 
@@ -2419,7 +2431,7 @@ watch(
               </template>
               <template v-else-if="genStore.profileLoadError">
                 <span>历史读取失败。{{ genStore.profileLoadError }}</span>
-                <button type="button" class="underline" @click="genStore.loadProfileData()">重试读取</button>
+                <button type="button" class="underline" @click="reloadHistory">重试读取</button>
               </template>
               <span v-else>存档设置保存失败。{{ genStore.profileSaveError }}</span>
             </div>

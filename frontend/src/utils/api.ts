@@ -1,4 +1,4 @@
-import axios, { AxiosRequestConfig } from 'axios';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { useAuthStore } from '../stores/auth';
 import { xorUint8Array } from './cipher';
 
@@ -18,15 +18,13 @@ const getSavedEncryptionSettings = () => {
 const initialSettings = getSavedEncryptionSettings();
 
 export const encryptionConfig = {
-  enabled: !!initialSettings.enabled,
-  key: initialSettings.key || 'nahida1027'
+  enabled: initialSettings?.enabled === true,
+  key: typeof initialSettings?.key === 'string' ? initialSettings.key.trim() || 'nahida1027' : 'nahida1027'
 };
 
 export const setEncryptionConfig = (enabled: boolean, key?: string) => {
   encryptionConfig.enabled = !!enabled;
-  if (key && key.trim()) {
-    encryptionConfig.key = key.trim();
-  }
+  encryptionConfig.key = key?.trim() || 'nahida1027';
   try {
     localStorage.setItem('novelai_encryption_settings', JSON.stringify({
       enabled: encryptionConfig.enabled,
@@ -65,6 +63,21 @@ export function resolveApiUrl(url?: string): string {
   return url;
 }
 
+export async function fetchBackendSettings() {
+  // The server's current settings must be readable with an empty or stale browser cache.
+  const { siteAccessKey } = useAuthStore();
+  const { data } = await axios.get(resolveApiUrl('/api/settings'), {
+    params: { bootstrap: 1 },
+    headers: { 'Cache-Control': 'no-cache', ...(siteAccessKey ? { 'x-access-key': siteAccessKey } : {}) },
+    timeout: 10000
+  });
+  const settings = data?.settings || data;
+  if (data?.success !== true || typeof settings?.enableEncryption !== 'boolean') {
+    throw new Error('服务器设置响应无法读取，请确认已登录飞牛后重试');
+  }
+  return settings;
+}
+
 const getEncryptKey = (headers?: any): string => {
   if (encryptionConfig.key && encryptionConfig.key.trim()) {
     return encryptionConfig.key.trim();
@@ -76,6 +89,35 @@ const getEncryptKey = (headers?: any): string => {
   const authStore = useAuthStore();
   return authStore.siteAccessKey ? `nahida1027${authStore.siteAccessKey}` : 'nahida1027';
 };
+
+function decodeApiResponse(response: AxiosResponse, key: string, responseType: AxiosRequestConfig['responseType']) {
+  const encrypted = response.headers['x-encrypted'] === '1';
+  const success = response.status >= 200 && response.status < 300;
+  const bytes = new Uint8Array(response.data);
+  const body = encrypted ? xorUint8Array(bytes, key) : bytes;
+
+  if (success && (responseType === 'arraybuffer' || responseType === 'blob')) {
+    response.data = responseType === 'blob'
+      ? new Blob([body], { type: String(response.headers['content-type'] || '') })
+      : body.buffer;
+    return;
+  }
+  if (response.status === 204 || response.status === 205) return;
+
+  const text = new TextDecoder().decode(body);
+  if (responseType === 'text' && success) {
+    response.data = text;
+    return;
+  }
+  try {
+    response.data = JSON.parse(text);
+  } catch {
+    if (success) throw new Error(encrypted
+      ? '无法解密服务器响应，请重试读取以同步加密设置'
+      : '服务器返回了非 JSON 或空响应，请确认已登录飞牛后重试');
+    response.data = text;
+  }
+}
 
 export const encryptedAxios = async (config: AxiosRequestConfig) => {
   const authStore = useAuthStore();
@@ -90,61 +132,29 @@ export const encryptedAxios = async (config: AxiosRequestConfig) => {
     headers['x-access-key'] = authStore.siteAccessKey;
   }
 
-  if (!isEncryptionEnabled()) {
-    return axios(modifiedConfig);
-  }
-
   const key = getEncryptKey(headers);
-  headers['x-encrypted'] = '1';
-
-  if (modifiedConfig.data) {
-    let dataToEncrypt = modifiedConfig.data;
-    if (typeof dataToEncrypt !== 'string' && !(dataToEncrypt instanceof Uint8Array)) {
-      dataToEncrypt = JSON.stringify(dataToEncrypt);
+  if (isEncryptionEnabled()) {
+    headers['x-encrypted'] = '1';
+    if (modifiedConfig.data) {
+      const data = modifiedConfig.data;
+      const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(typeof data === 'string' ? data : JSON.stringify(data));
+      modifiedConfig.data = xorUint8Array(bytes, key).buffer;
+      headers['Content-Type'] = 'application/octet-stream';
     }
-    const bytes = typeof dataToEncrypt === 'string' ? new TextEncoder().encode(dataToEncrypt) : dataToEncrypt;
-    modifiedConfig.data = xorUint8Array(bytes, key).buffer;
-    headers['Content-Type'] = 'application/octet-stream';
   }
+  modifiedConfig.responseType = 'arraybuffer';
 
-  const originalResponseType = modifiedConfig.responseType;
-  modifiedConfig.responseType = 'arraybuffer'; 
-
-  let res;
+  let response;
   try {
-    res = await axios(modifiedConfig);
-  } catch (error: any) {
-    if (error.response && error.response.data) {
-      try {
-        const decrypted = xorUint8Array(new Uint8Array(error.response.data), key);
-        const text = new TextDecoder().decode(decrypted);
-        try {
-          error.response.data = JSON.parse(text);
-        } catch {
-          error.response.data = text;
-        }
-      } catch (decErr) {
-        // Fallback if decryption fails
-      }
+    response = await axios(modifiedConfig);
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response) {
+      decodeApiResponse(error.response, key, config.responseType);
     }
     throw error;
   }
-
-  if (res.data) {
-    const decrypted = xorUint8Array(new Uint8Array(res.data), key);
-    if (originalResponseType !== 'arraybuffer' && originalResponseType !== 'blob') {
-      const text = new TextDecoder().decode(decrypted);
-      try {
-        res.data = JSON.parse(text);
-      } catch {
-        res.data = text;
-      }
-    } else {
-      res.data = decrypted.buffer;
-    }
-  }
-
-  return res;
+  decodeApiResponse(response, key, config.responseType);
+  return response;
 };
 
 export const encryptedFetchStream = async (url: string, options: RequestInit) => {
@@ -179,10 +189,11 @@ export const encryptedFetchStream = async (url: string, options: RequestInit) =>
   }
 
   const response = await fetch(targetUrl, modifiedOptions);
-  
-  if (!response.body) return response;
+
+  if (!response.body || response.headers.get('x-encrypted') !== '1') return response;
 
   const reader = response.body.getReader();
+  const keyBuf = new TextEncoder().encode(key);
   let responseOffset = 0;
 
   const decryptedStream = new ReadableStream({
@@ -194,7 +205,6 @@ export const encryptedFetchStream = async (url: string, options: RequestInit) =>
           break;
         }
         if (value) {
-          const keyBuf = new TextEncoder().encode(key);
           const decrypted = new Uint8Array(value.length);
           for (let i = 0; i < value.length; i++) {
             decrypted[i] = value[i] ^ keyBuf[(responseOffset + i) % keyBuf.length];
